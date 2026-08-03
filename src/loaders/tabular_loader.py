@@ -47,7 +47,13 @@ class TabularLoader(BaseLoader):
 
     # `entry` trae doc_id / source / phenomenon / format ya resueltos por el
     # catálogo, igual que en JSONLoader y PDFLoader.
-    def load(self, path: str | Path, entry: CatalogEntry) -> Document:
+    #
+    # CONTRATO: devuelve list[Document], igual que el resto de loaders del
+    # pipeline (PDFLoader puede devolver varios Document por archivo cuando
+    # hay figuras/tablas con OCR; para mantener una única interfaz en
+    # BaseLoader, todos los loaders devuelven lista aunque aquí siempre sea
+    # de un solo elemento).
+    def load(self, path: str | Path, entry: CatalogEntry) -> list[Document]:
         if entry.format == "csv":
             encabezado, filas = self._read_csv(path)
         elif entry.format == "xlsx":
@@ -69,15 +75,15 @@ class TabularLoader(BaseLoader):
             "n_filas_con_datos": len(bloques),
         }
 
-        return Document(
+        return [Document(
             doc_id=entry.doc_id,
-            source=entry.source,
-            format=entry.format,
-            phenomenon=entry.phenomenon,
-            language=None,        # lo llena el Preprocessor (§2.2), no el loader
-            text=text,
-            metadata=metadata,
-        )
+            fuente=entry.source,
+            formato=entry.format,
+            fenomeno=entry.phenomenon,
+            idioma=None,           # lo llena el Preprocessor (§2.2), no el loader
+            texto=text,
+            metadata_adicional=metadata,
+        )]
 
     # ---------- lectura ----------
 
@@ -193,7 +199,7 @@ if __name__ == "__main__":
     documentos, fallos, vacios = [], [], []
     for entrada in list(catalog.entries(format="csv")) + list(catalog.entries(format="xlsx")):
         try:
-            documentos.append(loader.load(root / entrada.source, entrada))
+            documentos.extend(loader.load(root / entrada.source, entrada))
         except TabularLoadError as error:
             fallos.append((entrada.source, str(error)))
 
@@ -201,16 +207,16 @@ if __name__ == "__main__":
     # más allá del encabezado (como el caso DEFENSA21_articulos-2.json del
     # JSONLoader, pero en versión tabular) o encabezado mal detectado.
     for doc in documentos:
-        if doc.metadata["n_filas_con_datos"] == 0:
+        if doc.metadata_adicional["n_filas_con_datos"] == 0:
             vacios.append(doc)
 
     print(f"documentos XLSX/CSV cargados : {len(documentos)}")
     print(f"fallos de lectura            : {len(fallos)}")
     print(f"sin filas con datos          : {len(vacios)}")
 
-    print("por fenómeno :", dict(sorted(Counter(d.phenomenon for d in documentos).items())))
+    print("por fenómeno :", dict(sorted(Counter(d.fenomeno for d in documentos).items())))
 
     for source, error in fallos[:10]:
         print(f"  FALLO: {source} -> {error}")
     for doc in vacios[:10]:
-        print(f"  VACIO: {doc.source}")
+        print(f"  VACIO: {doc.fuente}")

@@ -54,7 +54,10 @@ class PBFLoader(BaseLoader):
 
     # `entry` trae doc_id / source / phenomenon / format ya resueltos por el
     # catálogo, igual que en el resto de loaders.
-    def load(self, path: str | Path, entry: CatalogEntry) -> Document:
+    #
+    # CONTRATO: devuelve list[Document], igual que el resto del pipeline
+    # (ver nota de contrato en pdf_loader.py).
+    def load(self, path: str | Path, entry: CatalogEntry) -> list[Document]:
         capas = self._read(path)
 
         # Deduplicación: la CLAVE es el propio conjunto de atributos, no un
@@ -88,15 +91,15 @@ class PBFLoader(BaseLoader):
             "n_elementos_unicos": len(bloques),
         }
 
-        return Document(
+        return [Document(
             doc_id=entry.doc_id,
-            source=entry.source,
-            format=entry.format,
-            phenomenon=entry.phenomenon,
-            language=None,        # lo llena el Preprocessor (§2.2), no el loader
-            text=text,
-            metadata=metadata,
-        )
+            fuente=entry.source,
+            formato=entry.format,
+            fenomeno=entry.phenomenon,
+            idioma=None,           # lo llena el Preprocessor (§2.2), no el loader
+            texto=text,
+            metadata_adicional=metadata,
+        )]
 
     # ---------- lectura ----------
 
@@ -176,12 +179,12 @@ if __name__ == "__main__":
     documentos, fallos, vacios = [], [], []
     for entrada in catalog.entries(format="pbf"):
         try:
-            documentos.append(loader.load(root / entrada.source, entrada))
+            documentos.extend(loader.load(root / entrada.source, entrada))
         except PBFLoadError as error:
             fallos.append((entrada.source, str(error)))
 
     for doc in documentos:
-        if doc.metadata["n_elementos_unicos"] == 0:
+        if doc.metadata_adicional["n_elementos_unicos"] == 0:
             vacios.append(doc)
 
     print(f"documentos PBF cargados   : {len(documentos)}")
@@ -192,14 +195,14 @@ if __name__ == "__main__":
     # capas). No mide duplicación entre zooms: eso queda entre archivos
     # distintos, fuera del alcance de un único load() — ver nota al inicio
     # del archivo.
-    total = sum(d.metadata["n_elementos_total"] for d in documentos)
-    unicos = sum(d.metadata["n_elementos_unicos"] for d in documentos)
+    total = sum(d.metadata_adicional["n_elementos_total"] for d in documentos)
+    unicos = sum(d.metadata_adicional["n_elementos_unicos"] for d in documentos)
     if total:
         print(f"elementos totales antes de deduplicar (por tesela) : {total:,}")
         print(f"elementos únicos después de deduplicar (por tesela): {unicos:,} "
               f"({unicos / total:.1%})")
 
-    print("por fenómeno :", dict(sorted(Counter(d.phenomenon for d in documentos).items())))
+    print("por fenómeno :", dict(sorted(Counter(d.fenomeno for d in documentos).items())))
 
     for source, error in fallos[:10]:
         print(f"  FALLO: {source} -> {error}")

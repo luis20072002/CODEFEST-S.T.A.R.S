@@ -8,6 +8,11 @@ que es justo lo que el PDF dice que no se haga.
 
 El loader SOLO lee y estructura. No limpia ni normaliza (eso es §2.2, y va en el
 Preprocessor), ni detecta idioma, ni fragmenta.
+
+CONTRATO: `load()` devuelve `list[Document]`, igual que el resto de loaders
+del pipeline (ver nota en pdf_loader.py) — aquí siempre es una lista de un
+solo elemento, pero se mantiene la misma interfaz para que el orquestador no
+tenga que distinguir de dónde vino cada Document.
 """
 
 import json
@@ -67,7 +72,7 @@ class JSONLoader(BaseLoader):
 
     # `entry` trae doc_id / source / phenomenon / format ya resueltos por el
     # catálogo. El loader no lee el Excel: recibe la metadata ya masticada.
-    def load(self, path: str | Path, entry: CatalogEntry) -> Document:
+    def load(self, path: str | Path, entry: CatalogEntry) -> list[Document]:
         raw = self._read(path)
 
         # Los JSON del corpus son objetos en su mayoría, pero 8 son listas.
@@ -81,15 +86,22 @@ class JSONLoader(BaseLoader):
             # Un JSON que en su raíz es un número o una cadena suelta.
             raise JSONLoadError(f"Estructura JSON no soportada ({type(raw).__name__}): {path}")
 
-        return Document(
+        # `titulo` es un campo propio de Document, no debe quedar duplicado
+        # dentro de metadata_adicional. El título ya se agregó como primer
+        # bloque de `text` en _from_object (señal fuerte para recuperación);
+        # aquí se saca también como campo dedicado, sin quitarlo del texto.
+        titulo = _as_text(metadata.pop(TITLE_FIELD, None)) or None
+
+        return [Document(
             doc_id=entry.doc_id,
-            source=entry.source,
-            format=entry.format,
-            phenomenon=entry.phenomenon,
-            language=None,        # lo llena el Preprocessor (§2.2), no el loader
-            text=text,
-            metadata=metadata,
-        )
+            fuente=entry.source,
+            formato=entry.format,
+            fenomeno=entry.phenomenon,
+            idioma=None,           # lo llena el Preprocessor (§2.2), no el loader
+            titulo=titulo,
+            texto=text,
+            metadata_adicional=metadata,
+        )]
 
     # ---------- lectura ----------
 
@@ -99,7 +111,15 @@ class JSONLoader(BaseLoader):
         # codificación del sistema, que corrompe los acentos del corpus en
         # portugués y español sin lanzar ningún error. Fallo silencioso.
         try:
-            return json.loads(Path(path).read_text(encoding="utf-8"))
+            texto = Path(path).read_text(encoding="utf-8")
+        except OSError as error:
+            # Archivo inexistente, sin permisos, ruta rota, etc. Antes solo
+            # se capturaba JSONDecodeError; un archivo faltante tumbaba todo
+            # el orquestador en vez de quedar como un fallo de esa entrada.
+            raise JSONLoadError(f"No se pudo leer el archivo en {path}: {error}") from error
+
+        try:
+            return json.loads(texto)
         except json.JSONDecodeError as error:
             raise JSONLoadError(f"JSON inválido en {path}: {error}") from error
 
@@ -110,7 +130,10 @@ class JSONLoader(BaseLoader):
         consumidos: set[str] = set()     # claves ya usadas como texto
 
         # El título va primero: es señal fortísima para la recuperación y §2.1
-        # lo nombra explícitamente entre los campos de texto.
+        # lo nombra explícitamente entre los campos de texto. Nota: el título
+        # queda tanto en `text` (para el chunking/embeddings) como, más abajo
+        # en load(), en el campo dedicado `titulo` de Document — no se quita
+        # de aquí, solo se copia también hacia el campo dedicado.
         titulo = _as_text(obj.get(TITLE_FIELD))
         if titulo:
             bloques.append(titulo)
@@ -140,8 +163,12 @@ class JSONLoader(BaseLoader):
                 bloques.append(resumen)
                 consumidos.add("excerpt")
 
-        # Todo lo que no se usó como texto se conserva como metadata.
-        metadata = {k: v for k, v in obj.items() if k not in consumidos}
+        # Todo lo que no se usó como texto se conserva como metadata. OJO: el
+        # título SÍ se conserva aquí también (no está en `consumidos` a
+        # propósito para metadata — se quita explícitamente en load() para
+        # pasarlo al campo `titulo` dedicado, no aquí, así esta función no
+        # cambia de comportamiento respecto al original).
+        metadata = {k: v for k, v in obj.items() if k not in consumidos or k == TITLE_FIELD}
         # "\n\n" separa párrafos. Se conserva a propósito: es la frontera que el
         # chunking por párrafo (§3.2) y la completitud lingüística (§3.3) usan.
         return "\n\n".join(bloques), metadata
@@ -261,28 +288,28 @@ if __name__ == "__main__":
     documentos, fallos, vacios = [], [], []
     for entrada in catalog.entries(format="json"):
         try:
-            documentos.append(loader.load(root / entrada.source, entrada))
+            documentos.extend(loader.load(root / entrada.source, entrada))
         except JSONLoadError as error:
             fallos.append((entrada.source, str(error)))
 
     # Un documento con muy poco texto casi siempre significa que el loader no
     # encontró el campo de cuerpo de ese esquema. Es la señal de alarma.
     for doc in documentos:
-        if len(doc.text.split()) < 20:
+        if len(doc.texto.split()) < 20:
             vacios.append(doc)
 
     print(f"documentos JSON cargados : {len(documentos)}")
     print(f"fallos de lectura        : {len(fallos)}")
     print(f"con menos de 20 palabras : {len(vacios)}")
 
-    palabras = sorted(len(d.text.split()) for d in documentos)
+    palabras = sorted(len(d.texto.split()) for d in documentos)
     if palabras:
         print(f"palabras  min={palabras[0]}  mediana={palabras[len(palabras) // 2]}  "
               f"max={palabras[-1]}  total={sum(palabras):,}")
 
-    print("por fenómeno :", dict(sorted(Counter(d.phenomenon for d in documentos).items())))
+    print("por fenómeno :", dict(sorted(Counter(d.fenomeno for d in documentos).items())))
 
     for source, error in fallos[:10]:
         print(f"  FALLO: {source} -> {error}")
     for doc in vacios[:10]:
-        print(f"  CORTO ({len(doc.text.split())} pal.): {doc.source}")
+        print(f"  CORTO ({len(doc.texto.split())} pal.): {doc.fuente}")

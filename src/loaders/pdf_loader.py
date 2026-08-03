@@ -6,20 +6,53 @@ forma genérica y sin mezclar campos descriptivos (autor, fecha, número de
 páginas) dentro del cuerpo del documento.
 
 El loader SOLO lee y estructura. No limpia ni normaliza (eso es §2.2, y va en
-el Preprocessor), no detecta idioma, no fragmenta y no hace OCR. Si un PDF
-está escaneado (sin capa de texto), el loader lo deja constar en metadata en
-vez de inventar contenido.
+el Preprocessor), no detecta idioma, no fragmenta.
+
+CONTRATO: `load()` devuelve `list[Document]`, no un único `Document`. La
+mayoría de los PDF producen una lista de un elemento (el texto del propio
+PDF), pero cuando el PDF trae figuras o tablas insertadas como imagen (no
+como tabla nativa del PDF), cada una se procesa vía OCR (`OCRLoader`) y se
+agrega como un `Document` adicional e independiente en la misma lista — no
+se mezcla con el texto del cuerpo, porque son unidades de contenido
+distintas (una figura/tabla no es un párrafo del artículo).
+
+Cómo se decide qué imagen vale la pena mandar a OCR: NO por tamaño ni por
+heurísticas sobre el contenido de los píxeles. Se busca una leyenda tipo
+"Figura 3", "Tabla 2", "Gráfico 1" (o su equivalente en inglés/portugués)
+cerca de la imagen en el propio PDF — esa es la señal que el documento ya
+trae para decir "esto es una figura/tabla", y es mucho más confiable que
+adivinar. Una imagen sin leyenda cercana (logos, adornos, marcas de agua) se
+descarta sin pasar por OCR.
 """
 
 import re
 from pathlib import Path
 from typing import Any
 
+import fitz  # PyMuPDF: extracción de imágenes embebidas + sus coordenadas
 import pdfplumber
 
 from core.catalog import CatalogEntry
 from core.document import Document
 from loaders.base_loader import BaseLoader
+from loaders.ocr_loader import OCRLoadError, OCRLoader
+
+# Patrón de leyenda de figura/tabla en español, inglés y portugués (el corpus
+# mezcla los tres — ver comentario de BODY_FIELDS en json_loader.py sobre
+# fuentes en portugués como INPE). Solo mira el INICIO de la línea: una
+# leyenda real empieza así, no basta con que la palabra aparezca en medio de
+# una oración ("como muestra la figura 2, ...", eso NO es la leyenda misma).
+CAPTION_PATTERN = re.compile(
+    r"^\s*(figura|fig\.?|tabla|cuadro|gr[aá]fico|grafica|diagrama|"
+    r"figure|table|chart|quadro)\s*\.?\s*\d*",
+    re.IGNORECASE,
+)
+
+# Distancia vertical máxima (en puntos PDF, ~1/72") entre una imagen y el
+# bloque de texto candidato a ser su leyenda. Las leyendas van pegadas a la
+# imagen (arriba o abajo); un texto a 40pt es "la línea de al lado", más
+# lejos que eso ya es párrafo de cuerpo normal que no es leyenda de nada.
+CAPTION_MAX_DISTANCE = 40
 
 # Campos de metadata del PDF que sí aportan significado y se conservan.
 # El resto de lo que trae el diccionario `pdf.metadata` (claves propietarias
@@ -52,29 +85,46 @@ class PDFLoadError(Exception):
 
 
 class PDFLoader(BaseLoader):
-    """Convierte un archivo .pdf del corpus en un Document."""
+    """Convierte un archivo .pdf del corpus en una lista de Document:
+    el texto del cuerpo (siempre) + una figura/tabla por cada imagen con
+    leyenda que se haya podido reconocer vía OCR (si las hay)."""
+
+    def __init__(self) -> None:
+        self._ocr_loader = OCRLoader()
 
     # `entry` trae doc_id / source / phenomenon / format ya resueltos por el
     # catálogo, igual que en JSONLoader: el loader no vuelve a tocar el Excel.
-    def load(self, path: str | Path, entry: CatalogEntry) -> Document:
+    def load(self, path: str | Path, entry: CatalogEntry) -> list[Document]:
         paginas, pdf_metadata = self._read(path)
 
         bloques = self._paragraphs_por_pagina(paginas)
         text = "\n\n".join(bloques)
 
-        metadata = self._build_metadata(pdf_metadata, paginas)
+        figuras = self._extraer_figuras_con_leyenda(path)
 
-        return Document(
+        metadata = self._build_metadata(pdf_metadata, paginas, figuras)
+        # `titulo` es un campo propio de Document, no debe quedar duplicado
+        # dentro de metadata_adicional. Se saca de ahí si vino en los
+        # metadatos del PDF (puede no venir: muchos PDFs no traen Title en
+        # sus propiedades de documento).
+        titulo = metadata.pop("title", None)
+
+        documento_principal = Document(
             doc_id=entry.doc_id,
-            source=entry.source,
-            format=entry.format,
-            phenomenon=entry.phenomenon,
-            language=None,        # lo llena el Preprocessor (§2.2), no el loader
-            text=text,
-            metadata=metadata,
+            fuente=entry.source,
+            formato=entry.format,
+            fenomeno=entry.phenomenon,
+            idioma=None,           # lo llena el Preprocessor (§2.2), no el loader
+            titulo=titulo,
+            texto=text,
+            metadata_adicional=metadata,
         )
 
-    # ---------- lectura ----------
+        documentos = [documento_principal]
+        documentos.extend(self._figuras_a_documentos(figuras, entry))
+        return documentos
+
+    # ---------- lectura de texto ----------
 
     @staticmethod
     def _read(path: str | Path) -> tuple[list[str], dict[str, Any]]:
@@ -94,6 +144,75 @@ class PDFLoader(BaseLoader):
 
         return paginas, pdf_metadata
 
+    # ---------- extracción de figuras/tablas embebidas como imagen ----------
+
+    @staticmethod
+    def _extraer_figuras_con_leyenda(path: str | Path) -> list[dict[str, Any]]:
+        # PyMuPDF (fitz) en vez de pdfplumber para esta parte: da acceso
+        # directo a los bytes ya decodificados de cada imagen (`extract_image`)
+        # y a las coordenadas de texto por bloque, sin tener que lidiar a mano
+        # con el filtro de compresión del stream (DCTDecode, FlateDecode...).
+        try:
+            documento = fitz.open(path)
+        except Exception as error:
+            raise PDFLoadError(f"No se pudo abrir el PDF en {path} para extraer figuras: {error}") from error
+
+        figuras = []
+        try:
+            for num_pagina, pagina in enumerate(documento, start=1):
+                bloques_texto = pagina.get_text("blocks")
+                for img_info in pagina.get_images(full=True):
+                    xref = img_info[0]
+                    rects = pagina.get_image_rects(xref)
+                    if not rects:
+                        continue  # imagen referenciada pero no dibujada en la página (recurso reusado)
+
+                    leyenda = _buscar_leyenda(bloques_texto, rects[0])
+                    if leyenda is None:
+                        continue  # sin leyenda cercana: no es candidata a figura/tabla, se descarta
+
+                    base_image = documento.extract_image(xref)
+                    figuras.append({
+                        "bytes": base_image["image"],
+                        "extension": base_image["ext"],
+                        "pagina": num_pagina,
+                        "leyenda": leyenda,
+                    })
+        finally:
+            documento.close()
+
+        return figuras
+
+    def _figuras_a_documentos(
+        self, figuras: list[dict[str, Any]], entry: CatalogEntry
+    ) -> list[Document]:
+        documentos = []
+        for indice, figura in enumerate(figuras, start=1):
+            doc_id_figura = f"{entry.doc_id}_fig{indice:02d}"
+            try:
+                doc_figura = self._ocr_loader.load_from_bytes(
+                    figura["bytes"],
+                    doc_id=doc_id_figura,
+                    fuente=entry.source,
+                    formato="pdf_figura",   # distingue de "pdf" en formato aguas abajo
+                    fenomeno=entry.phenomenon,
+                    # La leyenda ("Figura 1: ...") es, semánticamente, el
+                    # título de este mini-documento — va al campo `titulo`
+                    # dedicado en vez de vivir solo dentro de metadata.
+                    titulo=figura["leyenda"],
+                    extra_metadata={
+                        "documento_origen": entry.doc_id,
+                        "pagina": figura["pagina"],
+                    },
+                )
+            except OCRLoadError:
+                # Una figura que falla en OCR no debería tumbar el PDF
+                # completo: se omite esa figura y se sigue con el resto.
+                continue
+            if doc_figura.texto:
+                documentos.append(doc_figura)
+        return documentos
+
     # ---------- estructuración del cuerpo ----------
 
     def _paragraphs_por_pagina(self, paginas: list[str]) -> list[str]:
@@ -105,7 +224,7 @@ class PDFLoader(BaseLoader):
     # ---------- metadata ----------
 
     def _build_metadata(
-        self, pdf_metadata: dict[str, Any], paginas: list[str]
+        self, pdf_metadata: dict[str, Any], paginas: list[str], figuras: list[dict[str, Any]]
     ) -> dict[str, Any]:
         metadata: dict[str, Any] = {}
 
@@ -127,11 +246,40 @@ class PDFLoader(BaseLoader):
         # y "PDF escaneado sin capa de texto".
         metadata["n_paginas"] = len(paginas)
         metadata["paginas_sin_texto"] = sum(1 for p in paginas if not p.strip())
+        # No es "n_figuras": este es el conteo de figuras/tablas CANDIDATAS
+        # (con leyenda detectada), antes de saber si el OCR sobre ellas dio
+        # texto útil. El conteo real de Document generados se ve contando los
+        # elementos de la lista que devuelve load().
+        metadata["n_figuras_candidatas"] = len(figuras)
 
         return metadata
 
 
 # ---------- utilidades ----------
+
+
+def _buscar_leyenda(bloques_texto: list[tuple], rect) -> str | None:
+    """Busca, entre los bloques de texto de la página, el más cercano a
+    `rect` (el rectángulo de la imagen) cuyo inicio matchee un patrón de
+    leyenda de figura/tabla. Devuelve la primera línea de ese bloque, o None
+    si ningún bloque cercano matchea."""
+    candidatos = []
+    for x0, y0, x1, y1, texto, *_resto in bloques_texto:
+        primera_linea = texto.strip().splitlines()[0] if texto.strip() else ""
+        if not primera_linea or not CAPTION_PATTERN.match(primera_linea):
+            continue
+        # Distancia vertical entre el bloque de texto y la imagen: si el
+        # bloque está arriba de la imagen, mide desde su borde inferior (y1)
+        # hasta el borde superior de la imagen (rect.y0); si está debajo, al
+        # revés. Se toma la menor de las dos por si acaso.
+        distancia = min(abs(y0 - rect.y1), abs(rect.y0 - y1))
+        if distancia <= CAPTION_MAX_DISTANCE:
+            candidatos.append((distancia, primera_linea))
+
+    if not candidatos:
+        return None
+    candidatos.sort(key=lambda c: c[0])
+    return candidatos[0][1]
 
 
 def _paragraphs_from_page(texto_pagina: str) -> list[str]:
@@ -189,37 +337,47 @@ if __name__ == "__main__":
     loader = PDFLoader()
 
     documentos, fallos, vacios, escaneados = [], [], [], []
+    figuras_ocr = []
     for entrada in catalog.entries(format="pdf"):
         try:
-            documentos.append(loader.load(root / entrada.source, entrada))
+            resultado = loader.load(root / entrada.source, entrada)
         except PDFLoadError as error:
             fallos.append((entrada.source, str(error)))
+            continue
+        principal, *figuras = resultado
+        documentos.append(principal)
+        figuras_ocr.extend(figuras)
 
     # Un documento con muy poco texto casi siempre significa que el PDF está
-    # escaneado (sin capa de texto) y necesitaría OCR, que este loader
-    # deliberadamente no hace. Es la señal de alarma equivalente a la del
-    # JSONLoader, pero aquí se distingue explícitamente ese caso.
+    # escaneado (sin capa de texto). Ya no significa "necesitaría OCR y no lo
+    # tiene": las figuras/tablas SÍ pasan por OCR ahora; esto sigue señalando
+    # el caso de un PDF completo escaneado como imagen (sin capa de texto en
+    # el cuerpo), que es un caso distinto y este loader no cubre.
     for doc in documentos:
-        if len(doc.text.split()) < 20:
+        if len(doc.texto.split()) < 20:
             vacios.append(doc)
-        if doc.metadata.get("paginas_sin_texto", 0) == doc.metadata.get("n_paginas", -1):
+        if doc.metadata_adicional.get("paginas_sin_texto", 0) == doc.metadata_adicional.get("n_paginas", -1):
             escaneados.append(doc)
 
-    print(f"documentos PDF cargados  : {len(documentos)}")
-    print(f"fallos de lectura        : {len(fallos)}")
-    print(f"con menos de 20 palabras : {len(vacios)}")
-    print(f"posiblemente escaneados  : {len(escaneados)}")
+    print(f"documentos PDF (cuerpo) cargados : {len(documentos)}")
+    print(f"figuras/tablas vía OCR generadas : {len(figuras_ocr)}")
+    print(f"fallos de lectura                : {len(fallos)}")
+    print(f"con menos de 20 palabras          : {len(vacios)}")
+    print(f"posiblemente escaneados           : {len(escaneados)}")
 
-    palabras = sorted(len(d.text.split()) for d in documentos)
+    palabras = sorted(len(d.texto.split()) for d in documentos)
     if palabras:
         print(f"palabras  min={palabras[0]}  mediana={palabras[len(palabras) // 2]}  "
               f"max={palabras[-1]}  total={sum(palabras):,}")
 
-    print("por fenómeno :", dict(sorted(Counter(d.phenomenon for d in documentos).items())))
+    print("por fenómeno :", dict(sorted(Counter(d.fenomeno for d in documentos).items())))
 
     for source, error in fallos[:10]:
         print(f"  FALLO: {source} -> {error}")
     for doc in vacios[:10]:
-        print(f"  CORTO ({len(doc.text.split())} pal.): {doc.source}")
+        print(f"  CORTO ({len(doc.texto.split())} pal.): {doc.fuente}")
     for doc in escaneados[:10]:
-        print(f"  ESCANEADO: {doc.source}")
+        print(f"  ESCANEADO: {doc.fuente}")
+    for doc in figuras_ocr[:10]:
+        print(f"  FIGURA: {doc.doc_id} ({doc.titulo!r}, "
+              f"{len(doc.texto.split())} pal. OCR)")
