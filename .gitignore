@@ -2,3 +2,5 @@ data/
 venv/
 CLAUDE.MD
 __pycache__/
+*.pyc
+ESTADO.MD
