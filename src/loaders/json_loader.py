@@ -86,21 +86,21 @@ class JSONLoader(BaseLoader):
             # Un JSON que en su raíz es un número o una cadena suelta.
             raise JSONLoadError(f"Estructura JSON no soportada ({type(raw).__name__}): {path}")
 
-        # `titulo` es un campo propio de Document, no debe quedar duplicado
-        # dentro de metadata_adicional. El título ya se agregó como primer
-        # bloque de `text` en _from_object (señal fuerte para recuperación);
-        # aquí se saca también como campo dedicado, sin quitarlo del texto.
-        titulo = _as_text(metadata.pop(TITLE_FIELD, None)) or None
+        # `title` es un campo propio de Document, no debe quedar duplicado
+        # dentro de metadata. El título ya se agregó como primer bloque de
+        # `text` en _from_object (señal fuerte para recuperación); aquí se
+        # saca también como campo dedicado, sin quitarlo del texto.
+        title = _as_text(metadata.pop(TITLE_FIELD, None)) or None
 
         return [Document(
             doc_id=entry.doc_id,
-            fuente=entry.source,
-            formato=entry.format,
-            fenomeno=entry.phenomenon,
-            idioma=None,           # lo llena el Preprocessor (§2.2), no el loader
-            titulo=titulo,
-            texto=text,
-            metadata_adicional=metadata,
+            source=entry.source,
+            format=entry.format,
+            phenomenon=entry.phenomenon,
+            language=None,         # lo llena el Preprocessor (§2.2), no el loader
+            title=title,
+            text=text,
+            metadata=metadata,
         )]
 
     # ---------- lectura ----------
@@ -111,7 +111,7 @@ class JSONLoader(BaseLoader):
         # codificación del sistema, que corrompe los acentos del corpus en
         # portugués y español sin lanzar ningún error. Fallo silencioso.
         try:
-            texto = Path(path).read_text(encoding="utf-8")
+            text = Path(path).read_text(encoding="utf-8")
         except OSError as error:
             # Archivo inexistente, sin permisos, ruta rota, etc. Antes solo
             # se capturaba JSONDecodeError; un archivo faltante tumbaba todo
@@ -119,85 +119,85 @@ class JSONLoader(BaseLoader):
             raise JSONLoadError(f"No se pudo leer el archivo en {path}: {error}") from error
 
         try:
-            return json.loads(texto)
+            return json.loads(text)
         except json.JSONDecodeError as error:
             raise JSONLoadError(f"JSON inválido en {path}: {error}") from error
 
     # ---------- caso 1: el JSON es un objeto (la gran mayoría) ----------
 
     def _from_object(self, obj: dict[str, Any]) -> tuple[str, dict[str, Any]]:
-        bloques: list[str] = []          # trozos de texto que luego se unen
-        consumidos: set[str] = set()     # claves ya usadas como texto
+        blocks: list[str] = []          # trozos de texto que luego se unen
+        consumed: set[str] = set()      # claves ya usadas como texto
 
         # El título va primero: es señal fortísima para la recuperación y §2.1
         # lo nombra explícitamente entre los campos de texto. Nota: el título
         # queda tanto en `text` (para el chunking/embeddings) como, más abajo
-        # en load(), en el campo dedicado `titulo` de Document — no se quita
+        # en load(), en el campo dedicado `title` de Document — no se quita
         # de aquí, solo se copia también hacia el campo dedicado.
-        titulo = _as_text(obj.get(TITLE_FIELD))
-        if titulo:
-            bloques.append(titulo)
-            consumidos.add(TITLE_FIELD)
+        title = _as_text(obj.get(TITLE_FIELD))
+        if title:
+            blocks.append(title)
+            consumed.add(TITLE_FIELD)
 
         # Se recorre BODY_FIELDS en orden y se toma SOLO el primero con contenido.
-        for campo in BODY_FIELDS:
-            parrafos = _paragraphs(obj.get(campo))
-            if parrafos:
-                bloques.extend(parrafos)
-                consumidos.add(campo)
+        for field_name in BODY_FIELDS:
+            paragraphs = _paragraphs(obj.get(field_name))
+            if paragraphs:
+                blocks.extend(paragraphs)
+                consumed.add(field_name)
                 break   # <- la clave de no duplicar: se corta al primer acierto
 
         # Texto secundario que sí aporta (viñetas de CENIA), después del cuerpo.
-        for campo in EXTRA_TEXT_FIELDS:
-            parrafos = _paragraphs(obj.get(campo))
-            if parrafos:
-                bloques.extend(parrafos)
-                consumidos.add(campo)
+        for field_name in EXTRA_TEXT_FIELDS:
+            paragraphs = _paragraphs(obj.get(field_name))
+            if paragraphs:
+                blocks.extend(paragraphs)
+                consumed.add(field_name)
 
         # Rescate para páginas cuyo cuerpo es un stub ("lee el artículo completo
         # en...") pero cuyo excerpt sí describe el contenido. Se comprueba que no
         # esté ya incluido para no repetirlo.
-        if "excerpt" not in consumidos and _word_count(bloques) < SHORT_BODY_WORDS:
-            resumen = _as_text(obj.get("excerpt"))
-            if resumen and resumen not in bloques:
-                bloques.append(resumen)
-                consumidos.add("excerpt")
+        if "excerpt" not in consumed and _word_count(blocks) < SHORT_BODY_WORDS:
+            summary = _as_text(obj.get("excerpt"))
+            if summary and summary not in blocks:
+                blocks.append(summary)
+                consumed.add("excerpt")
 
         # Todo lo que no se usó como texto se conserva como metadata. OJO: el
-        # título SÍ se conserva aquí también (no está en `consumidos` a
+        # título SÍ se conserva aquí también (no está en `consumed` a
         # propósito para metadata — se quita explícitamente en load() para
-        # pasarlo al campo `titulo` dedicado, no aquí, así esta función no
+        # pasarlo al campo `title` dedicado, no aquí, así esta función no
         # cambia de comportamiento respecto al original).
-        metadata = {k: v for k, v in obj.items() if k not in consumidos or k == TITLE_FIELD}
+        metadata = {k: v for k, v in obj.items() if k not in consumed or k == TITLE_FIELD}
         # "\n\n" separa párrafos. Se conserva a propósito: es la frontera que el
         # chunking por párrafo (§3.2) y la completitud lingüística (§3.3) usan.
-        return "\n\n".join(bloques), metadata
+        return "\n\n".join(blocks), metadata
 
     # ---------- caso 2: el JSON es una lista de registros ----------
 
     def _from_records(self, records: list[Any]) -> tuple[str, dict[str, Any]]:
-        bloques: list[str] = []
+        blocks: list[str] = []
         for record in records:
             if not isinstance(record, dict):
                 # Una lista de cadenas sueltas: se toma cada una como párrafo.
-                texto = _as_text(record)
-                if texto:
-                    bloques.append(texto)
+                text = _as_text(record)
+                if text:
+                    blocks.append(text)
                 continue
 
             # Cada registro se vuelve un bloque de líneas "clave: valor",
             # saltando los campos puramente técnicos del scraping.
-            lineas = [
-                f"{clave}: {_as_text(valor)}"
-                for clave, valor in record.items()
-                if clave not in RECORD_SKIP_KEYS and _as_text(valor)
+            lines = [
+                f"{key}: {_as_text(value)}"
+                for key, value in record.items()
+                if key not in RECORD_SKIP_KEYS and _as_text(value)
             ]
-            if lineas:
-                bloques.append("\n".join(lineas))
+            if lines:
+                blocks.append("\n".join(lines))
 
         # n_registros permite detectar después los archivos sin contenido útil
         # (p. ej. DEFENSA21_articulos-2.json, que es una lista vacía).
-        return "\n\n".join(bloques), {"n_registros": len(records)}
+        return "\n\n".join(blocks), {"n_registros": len(records)}
 
 
 # ---------- utilidades ----------
@@ -210,52 +210,52 @@ def _paragraphs(value: Any) -> list[str]:
 
     # Caso simple: ya es un texto suelto (body_text, abstract, content, excerpt).
     if isinstance(value, str):
-        texto = value.strip()
-        return [texto] if texto else []
+        text = value.strip()
+        return [text] if text else []
 
     if isinstance(value, list):
-        parrafos: list[str] = []
+        paragraphs: list[str] = []
         for item in value:
             if isinstance(item, str):
                 # body_paragraphs y lists: lista de cadenas.
-                texto = item.strip()
-                if texto:
-                    parrafos.append(texto)
+                text = item.strip()
+                if text:
+                    paragraphs.append(text)
             elif isinstance(item, dict):
                 # sections de CENIA: {"heading": "...", "paragraphs": [...]}.
                 # El heading se conserva porque es una señal estructural útil
                 # para el chunking jerárquico (§3.2).
-                encabezado = _as_text(item.get("heading"))
-                if encabezado:
-                    parrafos.append(encabezado)
-                parrafos.extend(_paragraphs(item.get("paragraphs")))
-        return parrafos
+                heading = _as_text(item.get("heading"))
+                if heading:
+                    paragraphs.append(heading)
+                paragraphs.extend(_paragraphs(item.get("paragraphs")))
+        return paragraphs
 
     # El `content` del informe SWF 2026 es un diccionario anidado:
     # {"sections": {"Titulo de la seccion": "texto...", ...}}. Sin esta rama se
     # perdía el documento entero.
     if isinstance(value, dict):
-        parrafos: list[str] = []
-        for clave, contenido in value.items():
-            if isinstance(contenido, str):
-                texto = contenido.strip()
-                if texto:
+        paragraphs: list[str] = []
+        for key, content in value.items():
+            if isinstance(content, str):
+                text = content.strip()
+                if text:
                     # La clave es el encabezado de la sección; se emite aparte
                     # para que el chunking estructural pueda aprovecharla.
-                    parrafos.append(str(clave).strip())
-                    parrafos.append(texto)
+                    paragraphs.append(str(key).strip())
+                    paragraphs.append(text)
             else:
                 # Contenedor intermedio (p. ej. la clave "sections"): se baja un
                 # nivel sin emitir su nombre, que no es contenido.
-                parrafos.extend(_paragraphs(contenido))
-        return parrafos
+                paragraphs.extend(_paragraphs(content))
+        return paragraphs
 
     return []
 
 
-def _word_count(bloques: list[str]) -> int:
+def _word_count(blocks: list[str]) -> int:
     # Cuenta palabras de todos los bloques juntos, para decidir si el cuerpo es un stub.
-    return sum(len(bloque.split()) for bloque in bloques)
+    return sum(len(block.split()) for block in blocks)
 
 
 def _as_text(value: Any) -> str:
@@ -285,31 +285,31 @@ if __name__ == "__main__":
     catalog = Catalog.from_excel(root / "Indice_Datos_Codefest.xlsx")
     loader = JSONLoader()
 
-    documentos, fallos, vacios = [], [], []
-    for entrada in catalog.entries(format="json"):
+    documents, failures, short = [], [], []
+    for entry in catalog.entries(format="json"):
         try:
-            documentos.extend(loader.load(root / entrada.source, entrada))
+            documents.extend(loader.load(root / entry.source, entry))
         except JSONLoadError as error:
-            fallos.append((entrada.source, str(error)))
+            failures.append((entry.source, str(error)))
 
     # Un documento con muy poco texto casi siempre significa que el loader no
     # encontró el campo de cuerpo de ese esquema. Es la señal de alarma.
-    for doc in documentos:
-        if len(doc.texto.split()) < 20:
-            vacios.append(doc)
+    for doc in documents:
+        if len(doc.text.split()) < 20:
+            short.append(doc)
 
-    print(f"documentos JSON cargados : {len(documentos)}")
-    print(f"fallos de lectura        : {len(fallos)}")
-    print(f"con menos de 20 palabras : {len(vacios)}")
+    print(f"documentos JSON cargados : {len(documents)}")
+    print(f"fallos de lectura        : {len(failures)}")
+    print(f"con menos de 20 palabras : {len(short)}")
 
-    palabras = sorted(len(d.texto.split()) for d in documentos)
-    if palabras:
-        print(f"palabras  min={palabras[0]}  mediana={palabras[len(palabras) // 2]}  "
-              f"max={palabras[-1]}  total={sum(palabras):,}")
+    word_counts = sorted(len(d.text.split()) for d in documents)
+    if word_counts:
+        print(f"palabras  min={word_counts[0]}  mediana={word_counts[len(word_counts) // 2]}  "
+              f"max={word_counts[-1]}  total={sum(word_counts):,}")
 
-    print("por fenómeno :", dict(sorted(Counter(d.fenomeno for d in documentos).items())))
+    print("por fenómeno :", dict(sorted(Counter(d.phenomenon for d in documents).items())))
 
-    for source, error in fallos[:10]:
+    for source, error in failures[:10]:
         print(f"  FALLO: {source} -> {error}")
-    for doc in vacios[:10]:
-        print(f"  CORTO ({len(doc.texto.split())} pal.): {doc.fuente}")
+    for doc in short[:10]:
+        print(f"  CORTO ({len(doc.text.split())} pal.): {doc.source}")

@@ -17,7 +17,7 @@ from pathlib import Path
 from core.catalog import Catalog, CatalogEntry
 from core.document import Document
 from loaders.json_loader import JSONLoader, JSONLoadError
-from loaders.ocr_loader import OCRLoader, OCRLoadError
+from loaders.ocr_loader import OCRLoader, OCRLoadError, ensure_tesseract
 from loaders.pbf_loader import PBFLoader, PBFLoadError
 from loaders.pdf_loader import PDFLoader, PDFLoadError
 from loaders.tabular_loader import TabularLoader, TabularLoadError
@@ -50,42 +50,42 @@ class OrchestrationResult:
     """Resultado de correr load_all: documentos cargados + registro de fallos."""
 
     def __init__(self) -> None:
-        self.documentos: list[Document] = []
-        self.fallos: list[tuple[str, str, str]] = []  # (source, format, error)
+        self.documents: list[Document] = []
+        self.failures: list[tuple[str, str, str]] = []  # (source, format, error)
 
-    def agregar_documentos(self, documentos: list[Document]) -> None:
-        self.documentos.extend(documentos)
+    def add_documents(self, documents: list[Document]) -> None:
+        self.documents.extend(documents)
 
-    def agregar_fallo(self, entry: CatalogEntry, error: str) -> None:
-        self.fallos.append((entry.source, entry.format, error))
+    def add_failure(self, entry: CatalogEntry, error: str) -> None:
+        self.failures.append((entry.source, entry.format, error))
 
     # ---------- resumen ----------
 
-    def imprimir_resumen(self, tiempo_segundos: float | None = None) -> None:
-        print(f"documentos cargados : {len(self.documentos)}")
-        print(f"fallos               : {len(self.fallos)}")
-        if tiempo_segundos is not None:
-            print(f"tiempo total         : {tiempo_segundos:.1f}s")
+    def print_summary(self, elapsed_seconds: float | None = None) -> None:
+        print(f"documentos cargados : {len(self.documents)}")
+        print(f"fallos               : {len(self.failures)}")
+        if elapsed_seconds is not None:
+            print(f"tiempo total         : {elapsed_seconds:.1f}s")
 
-        por_formato = Counter(d.formato for d in self.documentos)
-        print("por formato :", dict(sorted(por_formato.items())))
+        by_format = Counter(d.format for d in self.documents)
+        print("por formato :", dict(sorted(by_format.items())))
 
-        por_fenomeno = Counter(d.fenomeno for d in self.documentos)
-        print("por fenómeno :", dict(sorted(por_fenomeno.items(), key=lambda kv: (kv[0] is None, kv[0]))))
+        by_phenomenon = Counter(d.phenomenon for d in self.documents)
+        print("por fenómeno :", dict(sorted(by_phenomenon.items(), key=lambda kv: (kv[0] is None, kv[0]))))
 
-        vacios = [d for d in self.documentos if not d.texto.strip()]
-        print(f"documentos sin texto : {len(vacios)}")
+        empty = [d for d in self.documents if not d.text.strip()]
+        print(f"documentos sin texto : {len(empty)}")
 
-        if self.fallos:
-            print("\nfallos por formato :", dict(sorted(Counter(f for _, f, _ in self.fallos).items())))
+        if self.failures:
+            print("\nfallos por formato :", dict(sorted(Counter(f for _, f, _ in self.failures).items())))
             print("primeros fallos:")
-            for source, formato, error in self.fallos[:15]:
-                print(f"  [{formato}] {source} -> {error}")
+            for source, fmt, error in self.failures[:15]:
+                print(f"  [{fmt}] {source} -> {error}")
 
-        if vacios:
+        if empty:
             print("\nprimeros documentos sin texto:")
-            for doc in vacios[:15]:
-                print(f"  [{doc.formato}] {doc.doc_id} ({doc.fuente})")
+            for doc in empty[:15]:
+                print(f"  [{doc.format}] {doc.doc_id} ({doc.source})")
 
 
 def load_all(root: Path, catalog: Catalog, verbose: bool = True) -> OrchestrationResult:
@@ -97,41 +97,56 @@ def load_all(root: Path, catalog: Catalog, verbose: bool = True) -> Orchestratio
     OCR puede tardar varios segundos por archivo (cada figura/tabla candidata
     pasa por Tesseract) — sin esto, una corrida de varios minutos es
     indistinguible de un cuelgue."""
-    resultado = OrchestrationResult()
-    entradas = list(catalog.entries())
-    total = len(entradas)
+    result = OrchestrationResult()
+    entries = list(catalog.entries())
+    total = len(entries)
 
-    for indice, entry in enumerate(entradas, start=1):
+    # Chequeo previo del entorno de OCR. Se hace ANTES del bucle, y solo si de
+    # verdad va a hacer falta, por dos razones:
+    #   1. Fallar en el segundo 0 en vez del minuto 20. El primer formato que
+    #      usa OCR aparece a mitad del recorrido; sin esto, una máquina mal
+    #      configurada se descubre cuando ya se procesaron cientos de archivos.
+    #   2. Dejar constancia de la versión exacta del motor con la que se
+    #      construyó el índice, que es lo que hay que citar en el informe
+    #      técnico (§1.4): pip freeze no captura dependencias de sistema.
+    # Si Tesseract no está o le faltan idiomas, esto lanza y detiene la corrida:
+    # es preferible a construir un índice al que le falta todo el OCR.
+    if any(entry.format in ("pdf", "image") for entry in entries):
+        entorno = ensure_tesseract()
+        if verbose:
+            print(f"OCR: Tesseract {entorno['version']} · lang={entorno['lang']}", flush=True)
+
+    for index, entry in enumerate(entries, start=1):
         if verbose:
             # flush=True: en algunos entornos (PowerShell redirigiendo a
             # archivo, IDEs) stdout se buffers y no se ve nada hasta el
             # final aunque el proceso sí esté avanzando.
-            print(f"[{indice}/{total}] {entry.format:6s} {entry.source}", flush=True)
+            print(f"[{index}/{total}] {entry.format:6s} {entry.source}", flush=True)
 
         loader = LOADERS.get(entry.format)
         if loader is None:
-            resultado.agregar_fallo(entry, f"sin loader registrado para el formato {entry.format!r}")
+            result.add_failure(entry, f"sin loader registrado para el formato {entry.format!r}")
             continue
 
         try:
-            documentos = loader.load(root / entry.source, entry)
+            documents = loader.load(root / entry.source, entry)
         except LOAD_ERRORS as error:
-            resultado.agregar_fallo(entry, str(error))
+            result.add_failure(entry, str(error))
             if verbose:
                 print(f"    FALLO: {error}", flush=True)
             continue
 
-        resultado.agregar_documentos(documentos)
+        result.add_documents(documents)
 
-    return resultado
+    return result
 
 
 if __name__ == "__main__":
     root = Path(__file__).resolve().parent / "data" / "data_raw"
     catalog = Catalog.from_excel(root / "Indice_Datos_Codefest.xlsx")
 
-    inicio = time.time()
-    resultado = load_all(root, catalog)
-    duracion = time.time() - inicio
+    start = time.time()
+    result = load_all(root, catalog)
+    elapsed = time.time() - start
 
-    resultado.imprimir_resumen(tiempo_segundos=duracion)
+    result.print_summary(elapsed_seconds=elapsed)

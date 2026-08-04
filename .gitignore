@@ -1,6 +1,7 @@
 data/
 venv/
 CLAUDE.MD
+TAREAS.md
 __pycache__/
 *.pyc
 ESTADO.MD
