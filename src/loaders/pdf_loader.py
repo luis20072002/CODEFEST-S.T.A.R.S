@@ -70,6 +70,53 @@ METADATA_DISCARD = frozenset({
 # JSONLoader: no descarta el documento, solo lo señala para revisión manual.
 SHORT_BODY_WORDS = 40
 
+# ---------------------------------------------------------------------------
+# Política de OCR (decidida el 2026-08-04 con medición, ver ESTADO.md §9)
+# ---------------------------------------------------------------------------
+
+# OCR de figuras/tablas embebidas: DESACTIVADO.
+#
+# Se midió sobre 178 figuras de 60 PDFs repartidos por todo el corpus
+# (`py -m tools.inspeccionar_ocr 60`): el 62% daba OCR vacío, el 12% ruido, el
+# 7% menos de cinco palabras, y solo el 19% algo aprovechable — degradado
+# además de forma sistemática: la sigla «AI» salía como «Al» en el 100% de los
+# casos de la muestra, justo el término central de F1.
+#
+# Contra la Tabla 1 («texto: Texto original del fragmento, sin modificaciones»)
+# eso es meter al índice texto que el documento no dice. Y al desactivarlo
+# desaparece de paso el problema de ESTADO.md §7: los doc_id inventados
+# `<doc_id>_figNN` y el `formato = "pdf_figura"`, que no es ninguno de los
+# valores que la Tabla 1 enumera.
+#
+# La causa de fondo no es Tesseract: es que a una gráfica de barras no hay
+# texto que sacarle, y las imágenes embebidas venían a su resolución nativa,
+# casi siempre baja. Se deja como interruptor y no borrado, porque
+# `_extract_figures_with_caption` sigue siendo útil para el diagnóstico
+# (`tools/inspeccionar_ocr.py`) y porque la decisión es reversible si se
+# encuentra una forma de filtrar por calidad.
+OCR_FIGURAS = False
+
+# OCR de página completa para PDF escaneados: ACTIVADO.
+#
+# Caso distinto y medido aparte: cuando la página ENTERA es la imagen del
+# documento (texto corrido, tipografía de imprenta), el OCR funciona bien. En
+# `ALERTAS_informes001.pdf` —0 caracteres de capa de texto— rasterizar y pasar
+# Tesseract dio 605 palabras de prosa correcta, con acentos y todo.
+# Son los 51 documentos que hoy entran al índice como vectores vacíos.
+# §2.1 recomienda OCR explícitamente para este caso.
+OCR_PAGINA_COMPLETA = True
+
+# Se rasteriza a 150 DPI y no a 300: medido sobre una página, a 300 DPI se
+# PERDÍAN acentos («Defensoria», «dinamicas») que a 150 sí se leían bien, y
+# además cuesta 4× más. Provisional: está medido sobre una sola página.
+DPI_OCR_PAGINA = 150
+
+# Por debajo de estos caracteres en TODO el documento se considera escaneado y
+# se dispara el OCR de página completa. Se decide a nivel de documento y no de
+# página para no rasterizar páginas en blanco sueltas de PDFs que sí tienen
+# texto: eso multiplicaría el coste sobre los 757 PDF para no ganar nada.
+UMBRAL_DOC_ESCANEADO = 200
+
 # Regla para separar párrafos dentro del texto que devuelve una página.
 # pdfplumber no reconstruye párrafos: entrega líneas ya envueltas al ancho de
 # la página. Cuando SÍ trae una línea en blanco real entre bloques (común en
@@ -85,9 +132,13 @@ class PDFLoadError(Exception):
 
 
 class PDFLoader(BaseLoader):
-    """Convierte un archivo .pdf del corpus en una lista de Document:
-    el texto del cuerpo (siempre) + una figura/tabla por cada imagen con
-    leyenda que se haya podido reconocer vía OCR (si las hay)."""
+    """Convierte un archivo .pdf del corpus en una lista con UN Document: el
+    texto del cuerpo.
+
+    Si el PDF está escaneado (sin capa de texto útil), ese cuerpo se
+    reconstruye por OCR de página completa. El OCR de figuras embebidas está
+    desactivado — ver el bloque «Política de OCR» arriba, con la medición que
+    sustenta las dos decisiones."""
 
     def __init__(self) -> None:
         self._ocr_loader = OCRLoader()
@@ -100,9 +151,28 @@ class PDFLoader(BaseLoader):
         blocks = self._paragraphs_per_page(pages)
         text = "\n\n".join(blocks)
 
-        figures = self._extract_figures_with_caption(path)
+        # Rescate de escaneados: si el PDF apenas trae capa de texto, el
+        # cuerpo se reconstruye rasterizando cada página y pasándola por OCR.
+        ocr_de_pagina = False
+        if OCR_PAGINA_COMPLETA and len(text.strip()) < UMBRAL_DOC_ESCANEADO:
+            paginas_ocr = self._ocr_paginas_completas(path)
+            texto_ocr = "\n\n".join(p for p in paginas_ocr if p.strip())
+            # Solo se reemplaza si el OCR aportó MÁS que lo que ya había: un
+            # PDF legítimamente corto (una portada, un oficio de media página)
+            # no debe empeorar por pasar por aquí.
+            if len(texto_ocr.strip()) > len(text.strip()):
+                text = texto_ocr
+                ocr_de_pagina = True
+
+        figures = self._extract_figures_with_caption(path) if OCR_FIGURAS else []
 
         metadata = self._build_metadata(pdf_metadata, pages, figures)
+        # Trazabilidad: deja constancia de que este texto NO se leyó de la capa
+        # de texto del PDF sino que lo reconoció un OCR. Importa para auditar
+        # el índice y para el informe técnico.
+        if ocr_de_pagina:
+            metadata["ocr_pagina_completa"] = True
+            metadata["ocr_dpi"] = DPI_OCR_PAGINA
         # `title` es un campo propio de Document, no debe quedar duplicado
         # dentro de metadata. Se saca de ahí si vino en los metadatos del PDF
         # (puede no venir: muchos PDFs no traen Title en sus propiedades de
@@ -182,6 +252,41 @@ class PDFLoader(BaseLoader):
             document.close()
 
         return figures
+
+    # ---------- OCR de página completa (PDF escaneados) ----------
+
+    def _ocr_paginas_completas(self, path: str | Path) -> list[str]:
+        """Rasteriza cada página y le pasa OCR. Devuelve el texto por página.
+
+        Se usa fitz y no pdfplumber porque `get_pixmap(dpi=...)` renderiza la
+        página entera —incluido lo que sea imagen— a un mapa de bits, que es
+        justo lo que necesita Tesseract. pdfplumber solo sabe leer la capa de
+        texto, que en estos archivos está vacía.
+        """
+        try:
+            documento = fitz.open(path)
+        except Exception as error:
+            raise PDFLoadError(
+                f"No se pudo abrir el PDF en {path} para el OCR de página: {error}"
+            ) from error
+
+        textos: list[str] = []
+        try:
+            for numero, pagina in enumerate(documento, start=1):
+                pixmap = pagina.get_pixmap(dpi=DPI_OCR_PAGINA)
+                try:
+                    textos.append(self._ocr_loader.text_from_bytes(
+                        pixmap.tobytes("png"),
+                        contexto=f"{Path(path).name} p.{numero}",
+                    ))
+                except OCRLoadError:
+                    # Una página ilegible no debe tumbar el documento entero:
+                    # se pierde esa página y se sigue con las demás.
+                    textos.append("")
+        finally:
+            documento.close()
+
+        return textos
 
     def _figures_to_documents(
         self, figures: list[dict[str, Any]], entry: CatalogEntry

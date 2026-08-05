@@ -189,12 +189,7 @@ class OCRLoader(BaseLoader):
         tiene entrada propia en el catálogo. Quien llama es responsable de
         armar un doc_id que no choque con el del documento contenedor (p. ej.
         `f"{entry.doc_id}_fig01"`)."""
-        try:
-            image = Image.open(io.BytesIO(image_bytes))
-            image.load()
-        except Exception as error:
-            raise OCRLoadError(f"No se pudo decodificar la imagen embebida ({doc_id}): {error}") from error
-
+        image = self._abrir(image_bytes, doc_id)
         text = self._ocr(image)
         metadata = {"ancho_px": image.width, "alto_px": image.height}
         if extra_metadata:
@@ -211,7 +206,33 @@ class OCRLoader(BaseLoader):
             metadata=metadata,
         )
 
+    # ---------- caso 3: solo el texto, sin construir Document ----------
+
+    def text_from_bytes(self, image_bytes: bytes, *, contexto: str = "") -> str:
+        """OCR sobre los bytes de una imagen, devolviendo únicamente el texto.
+
+        La usa `PDFLoader` para el OCR de página completa de los PDF
+        escaneados: ahí las páginas NO son documentos independientes, son
+        trozos del cuerpo del mismo PDF, así que construir un Document por
+        página (como hace `load_from_bytes`) sobraría.
+
+        `contexto` solo se usa para que el mensaje de error diga de qué
+        archivo/página venía la imagen.
+        """
+        return self._ocr(self._abrir(image_bytes, contexto))
+
     # ---------- OCR ----------
+
+    @staticmethod
+    def _abrir(image_bytes: bytes, contexto: str) -> Image.Image:
+        try:
+            image = Image.open(io.BytesIO(image_bytes))
+            image.load()   # fuerza la decodificación ahora, no en el OCR
+        except Exception as error:
+            raise OCRLoadError(
+                f"No se pudo decodificar la imagen ({contexto}): {error}"
+            ) from error
+        return image
 
     @staticmethod
     def _ocr(image: Image.Image) -> str:
@@ -219,6 +240,18 @@ class OCRLoader(BaseLoader):
         # las demás lo leen de la cache. Importar el módulo no lanza nada, así
         # que el orquestador puede importarse en una máquina sin Tesseract.
         ensure_tesseract()
+
+        # Normalización a RGB antes de pasar por Tesseract. NO es cosmético:
+        # `pytesseract` guarda la imagen en un archivo temporal usando el
+        # formato que trae `image.format`, y Tesseract (vía leptonica) no sabe
+        # leer todos los que Pillow sí sabe abrir. El caso real es el único
+        # AVIF del corpus: Pillow lo abre sin problema, pero el OCR fallaba con
+        # «Unsupported image format/type». `convert()` deja `format` en None y
+        # entonces pytesseract lo escribe como PNG, que Tesseract sí entiende.
+        # De paso cubre paletas, RGBA y CMYK, que dan problemas parecidos.
+        if image.mode != "RGB" or image.format not in (None, "PNG", "JPEG", "TIFF"):
+            image = image.convert("RGB")
+
         try:
             text = pytesseract.image_to_string(image, lang=OCR_LANG)
         except Exception as error:
