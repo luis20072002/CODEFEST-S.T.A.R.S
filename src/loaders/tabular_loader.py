@@ -47,11 +47,17 @@ class TabularLoader(BaseLoader):
 
     # `entry` trae doc_id / source / phenomenon / format ya resueltos por el
     # catálogo, igual que en JSONLoader y PDFLoader.
-    def load(self, path: str | Path, entry: CatalogEntry) -> Document:
+    #
+    # CONTRATO: devuelve list[Document], igual que el resto de loaders del
+    # pipeline (PDFLoader puede devolver varios Document por archivo cuando
+    # hay figuras/tablas con OCR; para mantener una única interfaz en
+    # BaseLoader, todos los loaders devuelven lista aunque aquí siempre sea
+    # de un solo elemento).
+    def load(self, path: str | Path, entry: CatalogEntry) -> list[Document]:
         if entry.format == "csv":
-            encabezado, filas = self._read_csv(path)
+            header, rows = self._read_csv(path)
         elif entry.format == "xlsx":
-            encabezado, filas = self._read_xlsx(path)
+            header, rows = self._read_xlsx(path)
         else:
             raise TabularLoadError(
                 f"Formato no soportado por TabularLoader: {entry.format!r}"
@@ -60,24 +66,24 @@ class TabularLoader(BaseLoader):
         # Cada fila se convierte en un bloque; las filas totalmente vacías
         # (comunes al final de exportes de Excel) no producen bloque y se
         # descartan aquí en vez de arrastrarlas como ruido hasta el chunking.
-        bloques = [bloque for fila in filas if (bloque := _row_block(encabezado, fila))]
-        text = "\n\n".join(bloques)
+        blocks = [block for row in rows if (block := _row_block(header, row))]
+        text = "\n\n".join(blocks)
 
         metadata = {
-            "columnas": encabezado,
-            "n_filas": len(filas),
-            "n_filas_con_datos": len(bloques),
+            "columnas": header,
+            "n_filas": len(rows),
+            "n_filas_con_datos": len(blocks),
         }
 
-        return Document(
+        return [Document(
             doc_id=entry.doc_id,
             source=entry.source,
             format=entry.format,
             phenomenon=entry.phenomenon,
-            language=None,        # lo llena el Preprocessor (§2.2), no el loader
+            language=None,         # lo llena el Preprocessor (§2.2), no el loader
             text=text,
             metadata=metadata,
-        )
+        )]
 
     # ---------- lectura ----------
 
@@ -86,25 +92,25 @@ class TabularLoader(BaseLoader):
         try:
             # utf-8-sig: absorbe el BOM que agregan Excel y muchos exportes en
             # Windows; con utf-8 a secas ese BOM queda pegado al nombre de la
-            # primera columna ("\ufeffid" en vez de "id"), silenciosamente.
+            # primera columna ("﻿id" en vez de "id"), silenciosamente.
             with open(path, newline="", encoding="utf-8-sig") as f:
-                muestra = f.read(4096)
+                sample = f.read(4096)
                 f.seek(0)
                 try:
-                    dialecto = csv.Sniffer().sniff(muestra, delimiters=CSV_DELIMITERS)
+                    dialect = csv.Sniffer().sniff(sample, delimiters=CSV_DELIMITERS)
                 except csv.Error:
                     # Muestra demasiado corta o ambigua (p. ej. una sola
                     # columna): coma por defecto en vez de fallar el archivo.
-                    dialecto = csv.excel
-                filas = list(csv.reader(f, dialecto))
+                    dialect = csv.excel
+                rows = list(csv.reader(f, dialect))
         except OSError as error:
             raise TabularLoadError(f"No se pudo leer el CSV en {path}: {error}") from error
 
-        if not filas:
+        if not rows:
             return [], []
 
-        encabezado = _clean_header(filas[0])
-        return encabezado, filas[1:]
+        header = _clean_header(rows[0])
+        return header, rows[1:]
 
     @staticmethod
     def _read_xlsx(path: str | Path) -> tuple[list[str], list[list[Any]]]:
@@ -112,7 +118,7 @@ class TabularLoader(BaseLoader):
             # read_only + data_only: igual que en core/catalog.py — se
             # necesitan los VALORES calculados, no las fórmulas, y read_only
             # evita cargar todo el árbol de estilos que no se va a usar aquí.
-            libro = load_workbook(path, read_only=True, data_only=True)
+            workbook = load_workbook(path, read_only=True, data_only=True)
         except Exception as error:
             raise TabularLoadError(f"No se pudo leer el XLSX en {path}: {error}") from error
 
@@ -121,42 +127,42 @@ class TabularLoader(BaseLoader):
         # aparece un XLSX con varias hojas relevantes, hay que decidir
         # explícitamente cómo repartirlas (¿un Document por hoja? ¿se
         # concatenan?) en vez de asumirlo aquí en silencio.
-        hoja = libro.active
-        filas_crudas = list(hoja.iter_rows(values_only=True))
-        libro.close()
+        sheet = workbook.active
+        raw_rows = list(sheet.iter_rows(values_only=True))
+        workbook.close()
 
-        if not filas_crudas:
+        if not raw_rows:
             return [], []
 
-        encabezado = _clean_header(list(filas_crudas[0]))
-        filas = [list(fila) for fila in filas_crudas[1:]]
-        return encabezado, filas
+        header = _clean_header(list(raw_rows[0]))
+        rows = [list(row) for row in raw_rows[1:]]
+        return header, rows
 
 
 # ---------- utilidades ----------
 
 
-def _clean_header(fila_cruda: list[Any]) -> list[str]:
+def _clean_header(raw_row: list[Any]) -> list[str]:
     # Columnas sin nombre (encabezado vacío, común en columnas auxiliares de
     # Excel) reciben un nombre posicional para no perder el valor de esa
     # celda ni desalinear el resto de columnas.
-    encabezado = []
-    for i, valor in enumerate(fila_cruda):
-        nombre = _as_text(valor)
-        encabezado.append(nombre if nombre else f"columna_{i + 1}")
-    return encabezado
+    header = []
+    for i, value in enumerate(raw_row):
+        name = _as_text(value)
+        header.append(name if name else f"columna_{i + 1}")
+    return header
 
 
-def _row_block(encabezado: list[str], fila: list[Any]) -> str:
+def _row_block(header: list[str], row: list[Any]) -> str:
     # zip corta a la longitud más corta: si una fila de CSV trae menos
     # celdas que columnas de encabezado (líneas truncadas, error de exporte),
     # se toma lo que hay en vez de fallar todo el archivo por una fila.
-    lineas = [
-        f"{nombre}: {texto}"
-        for nombre, valor in zip(encabezado, fila)
-        if (texto := _as_text(valor))  # celdas vacías se omiten (requisito explícito)
+    lines = [
+        f"{name}: {text}"
+        for name, value in zip(header, row)
+        if (text := _as_text(value))  # celdas vacías se omiten (requisito explícito)
     ]
-    return "\n".join(lineas)
+    return "\n".join(lines)
 
 
 def _as_text(value: Any) -> str:
@@ -190,27 +196,27 @@ if __name__ == "__main__":
     catalog = Catalog.from_excel(root / "Indice_Datos_Codefest.xlsx")
     loader = TabularLoader()
 
-    documentos, fallos, vacios = [], [], []
-    for entrada in list(catalog.entries(format="csv")) + list(catalog.entries(format="xlsx")):
+    documents, failures, empty = [], [], []
+    for entry in list(catalog.entries(format="csv")) + list(catalog.entries(format="xlsx")):
         try:
-            documentos.append(loader.load(root / entrada.source, entrada))
+            documents.extend(loader.load(root / entry.source, entry))
         except TabularLoadError as error:
-            fallos.append((entrada.source, str(error)))
+            failures.append((entry.source, str(error)))
 
     # Un documento sin filas con datos casi siempre significa: archivo vacío
     # más allá del encabezado (como el caso DEFENSA21_articulos-2.json del
     # JSONLoader, pero en versión tabular) o encabezado mal detectado.
-    for doc in documentos:
+    for doc in documents:
         if doc.metadata["n_filas_con_datos"] == 0:
-            vacios.append(doc)
+            empty.append(doc)
 
-    print(f"documentos XLSX/CSV cargados : {len(documentos)}")
-    print(f"fallos de lectura            : {len(fallos)}")
-    print(f"sin filas con datos          : {len(vacios)}")
+    print(f"documentos XLSX/CSV cargados : {len(documents)}")
+    print(f"fallos de lectura            : {len(failures)}")
+    print(f"sin filas con datos          : {len(empty)}")
 
-    print("por fenómeno :", dict(sorted(Counter(d.phenomenon for d in documentos).items())))
+    print("por fenómeno :", dict(sorted(Counter(d.phenomenon for d in documents).items())))
 
-    for source, error in fallos[:10]:
+    for source, error in failures[:10]:
         print(f"  FALLO: {source} -> {error}")
-    for doc in vacios[:10]:
+    for doc in empty[:10]:
         print(f"  VACIO: {doc.source}")
