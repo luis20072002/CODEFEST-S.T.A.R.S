@@ -51,6 +51,12 @@ from indexing.metadata import CHUNKS, METADATA
 # —determinista, no aleatoria— lo detecta igual y tarda segundos.
 MUESTRAS_IDA_VUELTA = 200
 
+# Cuánto puede alejarse de 1,0 el coseno para seguir considerándose un empate
+# entre vectores indistinguibles. Las diferencias medidas por el relleno de los
+# lotes son del orden de 1e-6 (`ESTADO.md` §14); 1e-4 deja margen de sobra y
+# sigue muy lejos de cualquier desalineamiento real.
+TOLERANCIA_EMPATE = 1e-4
+
 
 def main() -> int:
     import faiss
@@ -107,11 +113,18 @@ def main() -> int:
         obtenido = int(e[0])
         if obtenido == p:
             continue
-        # Un empate entre vectores IDÉNTICOS no es un desalineamiento: FAISS
-        # devuelve el de índice más bajo, y es lo correcto. El corpus tiene
-        # 3.597 chunks con texto repetido (`ESTADO.md` §15), así que esto pasa
-        # de verdad — 7 de 200 en la primera corrida, todos duplicados reales.
-        if np.array_equal(indice.reconstruct(obtenido), consultas[posiciones.index(p)]):
+        # Un empate entre vectores indistinguibles no es un desalineamiento:
+        # FAISS devuelve uno de los dos y es lo correcto. El corpus tiene 3.597
+        # chunks con texto repetido (`ESTADO.md` §15), así que esto pasa de
+        # verdad — 7 de 200 en la primera corrida.
+        #
+        # ⚠️ El criterio es el COSENO, no la igualdad byte a byte. Antes se
+        # comparaba con `array_equal` y fallaba en Colab: dos chunks con el
+        # mismo texto codificados en lotes distintos difieren ~4e-06 por el
+        # relleno (`ESTADO.md` §14), así que su coseno es 1,000000 pero sus
+        # bytes no coinciden. Un desalineamiento de verdad daría un coseno
+        # bajo, no 1,0, así que este criterio sigue detectándolo.
+        if float(s[0]) >= 1.0 - TOLERANCIA_EMPATE:
             empates += 1
             continue
         fallos_b.append((int(p), obtenido, float(s[0])))
