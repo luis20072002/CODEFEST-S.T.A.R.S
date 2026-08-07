@@ -6,3 +6,8 @@ TAREAS.md
 __pycache__/
 *.pyc
 ESTADO.MD
+
+# La base vectorial NO cabe en GitHub: index.faiss son ~373 MB y
+# metadata.jsonl ~229 MB, y el limite por archivo son 100 MB.
+# Se entrega por el canal de la competencia, no por el repositorio.
+entrega/base_vectorial/
