@@ -49,6 +49,7 @@ equivocadas, que incumple la Tabla 1 entera.
 
 import json
 import sys
+import time
 from pathlib import Path
 
 from core.store import read_chunks
@@ -70,6 +71,7 @@ def write_metadata(
     *,
     con_faiss_id: bool = True,
     contar_tokens=None,
+    progreso: bool = True,
 ) -> int:
     """Escribe el `metadata.jsonl` de la entrega y devuelve cuántas líneas puso.
 
@@ -98,6 +100,7 @@ def write_metadata(
     temporal = salida.with_suffix(salida.suffix + ".parcial")
 
     n = 0
+    inicio = time.perf_counter()
     # `newline="\n"` y UTF-8 explícitos: esta máquina usa cp1252 por defecto y
     # §9.3/§10.2.1 evalúan el CONTENIDO del texto. Un acento mal escrito aquí
     # es un fragmento que deja de emparejar.
@@ -111,6 +114,14 @@ def write_metadata(
             f.write(json.dumps(registro, ensure_ascii=False))
             f.write("\n")
             n += 1
+
+            # Sin esto el proceso parece colgado: con `--tokens` son 91.021
+            # llamadas al tokenizador y varios minutos sin una sola línea en
+            # pantalla. Pasó de verdad en Colab.
+            if progreso and n % 10_000 == 0:
+                ritmo = n / max(time.perf_counter() - inicio, 1e-9)
+                print(f"  {n:,} fragmentos  ({ritmo:,.0f}/s)",
+                      file=sys.stderr, flush=True)
 
     temporal.replace(salida)
     return n
