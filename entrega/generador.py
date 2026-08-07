@@ -60,36 +60,42 @@ from pathlib import Path
 RAIZ = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(RAIZ / "src"))
 
-from retrieval.consultas import CONSULTAS, cargar_consultas   # noqa: E402
-from retrieval.search import (INDICE, MAX_POR_DOCUMENTO, METADATA,  # noqa: E402
-                              N_DOCUMENTOS, N_FRAGMENTOS, Buscador)
+from retrieval.consultas import (CONSULTAS, cargar_consultas,  # noqa: E402
+                                 fenomeno_de_consulta)
+from retrieval.search import (BONIFICACION_FENOMENO, INDICE,  # noqa: E402
+                              MAX_POR_DOCUMENTO, METADATA, N_DOCUMENTOS,
+                              N_FRAGMENTOS, Buscador)
 
 SALIDA = RAIZ / "entrega" / "resultados.jsonl"
 
 
-def generar(consultas, buscador, modelo=None, max_por_documento=MAX_POR_DOCUMENTO):
+def generar(consultas, buscador, modelo=None, max_por_documento=MAX_POR_DOCUMENTO,
+            bonificacion=BONIFICACION_FENOMENO):
     """Produce un objeto de resultado por consulta, en orden.
 
     Con `modelo=None` funciona en **modo simulado**: en vez de codificar la
     consulta usa un vector del propio índice. No sirve para evaluar nada —los
     resultados no tienen relación con la consulta— pero permite comprobar que
     el formato de salida cumple §9.3.1 sin descargar 4,35 GB.
+
+    `bonificacion > 1.0` empuja hacia el fenómeno de la consulta. El fenómeno
+    sale de `fenomeno_de_consulta()`, que es una correspondencia **verificada a
+    mano** sobre el archivo de ADL, no un campo del archivo.
     """
     import numpy as np
 
     for posicion, (query_id, texto) in enumerate(consultas):
+        fenomeno = fenomeno_de_consulta(query_id) if bonificacion != 1.0 else None
+        comun = dict(query_id=query_id, max_por_documento=max_por_documento,
+                     fenomeno=fenomeno, bonificacion=bonificacion)
         if modelo is not None:
-            resultado = buscador.buscar_texto(
-                texto, modelo, query_id=query_id,
-                max_por_documento=max_por_documento)
+            resultado = buscador.buscar_texto(texto, modelo, **comun)
         else:
             # Vector del índice, repartido para que no salgan los mismos
             # siempre. Determinista: no se usa azar.
             indice = (posicion * 977) % buscador.indice.ntotal
             vector = np.asarray(buscador.indice.reconstruct(int(indice)))
-            resultado = buscador.buscar(vector, query_id=query_id,
-                                        consulta=texto,
-                                        max_por_documento=max_por_documento)
+            resultado = buscador.buscar(vector, consulta=texto, **comun)
         yield resultado
 
 
@@ -104,6 +110,9 @@ def main() -> int:
     parser.add_argument("--metadata", type=Path, default=METADATA)
     parser.add_argument("--max-por-documento", type=int, default=MAX_POR_DOCUMENTO,
                         help="0 desactiva el tope de fragmentos por documento")
+    parser.add_argument("--bonificacion", type=float, default=BONIFICACION_FENOMENO,
+                        help="factor para los documentos del fenómeno de la "
+                             "consulta (1.0 = desactivada; útil entre 1.02 y 1.05)")
     parser.add_argument("--simulado", action="store_true",
                         help="NO codifica: prueba de formato sin el modelo")
     args = parser.parse_args()
@@ -116,6 +125,10 @@ def main() -> int:
 
     consultas = cargar_consultas(args.consultas)
     print(f"consultas : {len(consultas)} de {args.consultas.name}")
+    if args.bonificacion != 1.0:
+        print(f"⚠️  bonificación por fenómeno ACTIVADA: ×{args.bonificacion}")
+        print("    Depende del reparto q001–q016→F1, q017–q032→F2, q033–q050→F3,")
+        print("    verificado a mano sobre el archivo de ADL. Ver ESTADO.md §5.")
     if len(consultas) != 50:
         # §9.3 exige exactamente 50 líneas. Avisar, no fallar: si ADL entrega
         # otro conjunto, el script debe seguir sirviendo.
@@ -141,7 +154,8 @@ def main() -> int:
 
     escritas = 0
     with open(temporal, "w", encoding="utf-8", newline="\n") as f:
-        for resultado in generar(consultas, buscador, modelo, args.max_por_documento):
+        for resultado in generar(consultas, buscador, modelo,
+                                 args.max_por_documento, args.bonificacion):
             f.write(json.dumps(resultado.to_json(), ensure_ascii=False))
             f.write("\n")
             escritas += 1

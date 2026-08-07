@@ -65,6 +65,33 @@ def cargar_consultas(ruta: Path = CONSULTAS) -> List[Tuple[str, str]]:
     return consultas
 
 
+def fenomeno_de_consulta(query_id: str) -> int | None:
+    """Fenómeno temático al que pertenece una consulta, o `None` si no se sabe.
+
+    ⚠️ **Esto NO viene en el archivo de consultas: es una correspondencia
+    verificada a mano** sobre el `Extracto_Preguntas_50_v2.pdf` de ADL
+    (`ESTADO.md` §5):
+
+        q001–q016 → F1    q017–q032 → F2    q033–q050 → F3
+
+    Por eso devuelve `None` fuera de ese rango en vez de adivinar. Si ADL
+    entregara otro conjunto de consultas, esta función mentiría en silencio y
+    la bonificación de `retrieval.search` empujaría hacia el fenómeno
+    equivocado. Antes de reutilizarla con otro archivo, hay que volver a
+    verificar el reparto.
+    """
+    if not query_id or not query_id[1:].isdigit():
+        return None
+    numero = int(query_id[1:])
+    if 1 <= numero <= 16:
+        return 1
+    if 17 <= numero <= 32:
+        return 2
+    if 33 <= numero <= 50:
+        return 3
+    return None
+
+
 if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 

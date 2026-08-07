@@ -12,6 +12,6 @@ ESTADO.MD
 # Se entrega por el canal de la competencia, no por el repositorio.
 entrega/base_vectorial/
 
-# Salida del modo --simulado del generador: NO son resultados reales, no
-# responden a las consultas. Sirve solo para validar el formato de §9.3.1.
-entrega/resultados_simulado.jsonl
+# Salidas de experimento del generador (--simulado, --bonificacion, etc.).
+# El entregable es `entrega/resultados.jsonl` a secas, y ese SI se rastrea.
+entrega/resultados_*.jsonl

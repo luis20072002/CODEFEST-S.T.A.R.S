@@ -95,6 +95,88 @@ MAX_POR_DOCUMENTO = 2
 N_DOCUMENTOS = 3
 N_FRAGMENTOS = 10
 
+# Factor por el que se multiplica la puntuación de los candidatos que
+# pertenecen al fenómeno de la consulta. **1.0 = desactivada**, que es el valor
+# por defecto a propósito: no se puede medir si mejora o empeora sin el ground
+# truth. Ver `aplicar_bonificacion()` para el porqué y para elegir el valor.
+BONIFICACION_FENOMENO = 1.0
+
+
+def aplicar_bonificacion(candidatos: List[Dict], fenomeno: Optional[int],
+                         factor: float = BONIFICACION_FENOMENO) -> List[Dict]:
+    """Sube la puntuación de los candidatos del fenómeno esperado y reordena.
+
+    ────────────────────────────────────────────────────────────────────────
+    EL PROBLEMA QUE INTENTA CORREGIR, MEDIDO
+
+    Sobre el `resultados.jsonl` real (2026-08-07), la proporción de documentos
+    devueltos que pertenecen al fenómeno de la consulta:
+
+        F1 (q001–q016):  29/48  = 60,4%
+        F2 (q017–q032):  42/48  = 87,5%
+        F3 (q033–q050):  50/54  = 92,6%
+
+    **F1 se queda en el 60%.** La causa está identificada: SIPRI está
+    catalogado como F3 pero publica mucho sobre IA militar, que es el tema de
+    F1. Las etiquetas de fenómeno describen **el observatorio de origen, no el
+    contenido**. Dos consultas (`q001` y `q003`) no devuelven ni un documento
+    de F1.
+
+    ────────────────────────────────────────────────────────────────────────
+    POR QUÉ UNA BONIFICACIÓN Y NO UN FILTRO
+
+    §8.7 permite filtrar por metadata, y filtrar por `fenomeno` arreglaría el
+    60% de golpe. Pero **el fallo de filtrar es irreversible**: si el *ground
+    truth* marca como relevante un documento de otro fenómeno, filtrarlo lo
+    hace inalcanzable y §10.2.2 lo cuenta como fallo sin remedio.
+
+    La bonificación es la opción intermedia: empuja hacia el fenómeno esperado
+    **sin cerrar la puerta** a un documento de otro que sea claramente mejor.
+
+    ⚠️ **No sabemos cuál es mejor y no se puede medir**: el *ground truth* no
+    es público, así que esto es una elección de riesgo, no una optimización.
+    Por eso el valor por defecto es `1.0` — desactivada— y hay que pedirla
+    explícitamente.
+
+    ────────────────────────────────────────────────────────────────────────
+    CÓMO ELEGIR EL FACTOR — MEDIDO, NO ESTIMADO
+
+    ⚠️ La primera versión de este docstring proponía 1,02–1,05 razonando sobre
+    la aritmética de los cosenos (se apiñan en torno a 0,60, así que ×1,05 son
+    +0,030). **La medición lo desmintió.** Probado sobre el índice real, con
+    consultas simuladas cuyos candidatos mezclan fenómenos y bonificando el
+    minoritario:
+
+        ×1,02   sin ningún efecto
+        ×1,05   sin ningún efecto
+        ×1,10   promueve 1 documento y 1 fragmento
+
+    El motivo es que un candidato del fenómeno minoritario suele estar muy
+    abajo en la lista, y +0,03 no le alcanza para saltar decenas de puestos.
+    Esos casos son adversos a propósito: en una consulta real de F1, los
+    documentos de F1 estarán cerca en puntuación y un factor pequeño sí podría
+    moverlos.
+
+    **Por eso no hay un valor recomendado a ciegas.** Hay que correr las 50
+    consultas con varios factores y mirar cómo se mueve la correspondencia con
+    el fenómeno (60,4% en F1 sin bonificación). Eso sí se puede medir; lo que
+    no se puede medir es si mejora la recuperación de verdad.
+    """
+    if not fenomeno or factor == 1.0:
+        return candidatos
+
+    prefijo = f"F{fenomeno}-"
+    ajustados = []
+    for c in candidatos:
+        copia = dict(c)      # no se muta la lista del llamante
+        if c["doc_id"].startswith(prefijo):
+            copia["score"] = c["score"] * factor
+        ajustados.append(copia)
+    # Reordenar: la bonificación cambia el orden, y todo lo de aguas abajo
+    # (agregación a documento y selección de fragmentos) asume orden por
+    # puntuación descendente.
+    return _ordenar_por_puntuacion(ajustados)
+
 
 def _ordenar_por_puntuacion(fragmentos: List[Dict]) -> List[Dict]:
     """Ordena de mayor a menor relevancia, con desempate determinista.
@@ -356,9 +438,18 @@ class Buscador:
         k: int = K_CANDIDATOS,
         max_por_documento: Optional[int] = MAX_POR_DOCUMENTO,
         estrategia: str = "max",
+        fenomeno: Optional[int] = None,
+        bonificacion: float = BONIFICACION_FENOMENO,
     ) -> Resultado:
-        """De un vector de consulta a un `Resultado` completo."""
+        """De un vector de consulta a un `Resultado` completo.
+
+        `fenomeno` + `bonificacion` activan el empujón hacia el fenómeno
+        esperado. Se aplica **una sola vez, sobre la lista de candidatos**, así
+        que afecta por igual a la agregación de documentos y a la selección de
+        fragmentos: las dos parten de la misma lista ya reordenada.
+        """
         candidatos = self.candidatos_suficientes(vector, k, N_DOCUMENTOS)
+        candidatos = aplicar_bonificacion(candidatos, fenomeno, bonificacion)
         return Resultado(
             query_id=query_id,
             documents=self.agregar_documentos(candidatos, N_DOCUMENTOS, estrategia),
