@@ -11,3 +11,7 @@ ESTADO.MD
 # metadata.jsonl ~229 MB, y el limite por archivo son 100 MB.
 # Se entrega por el canal de la competencia, no por el repositorio.
 entrega/base_vectorial/
+
+# Salida del modo --simulado del generador: NO son resultados reales, no
+# responden a las consultas. Sirve solo para validar el formato de §9.3.1.
+entrega/resultados_simulado.jsonl
