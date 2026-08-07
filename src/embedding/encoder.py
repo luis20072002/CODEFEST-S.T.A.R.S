@@ -109,8 +109,32 @@ def cargar_modelo(nombre: str = MODELO, revision: str | None = REVISION):
     return SentenceTransformer(nombre, revision=revision)
 
 
+def cargar_tokenizador(nombre: str = MODELO, revision: str | None = REVISION):
+    """Carga SOLO el tokenizador, sin los pesos del modelo.
+
+    ⚠️ **La diferencia de tamaño es enorme y por eso existe esta función**:
+    `cargar_modelo()` descarga **4,35 GB**; el tokenizador de XLM-RoBERTa son
+    unos **17 MB**. Contar tokens no necesita la red neuronal, solo su
+    vocabulario.
+
+    Gracias a esto, `py -m chunking.chunker --tokens` y
+    `py -m indexing.metadata --tokens` se pueden ejecutar en una máquina
+    modesta —incluida esta, donde el modelo se borró a propósito
+    (`ESTADO.md` §14)— sin descargar los pesos.
+
+    Se fija la misma `revision` que el modelo: el tokenizador tiene que ser
+    exactamente el que produjo los vectores, o `num_tokens` mentiría.
+    """
+    from transformers import AutoTokenizer
+
+    return AutoTokenizer.from_pretrained(nombre, revision=revision)
+
+
 def contador_de_tokens(modelo) -> Callable[[str], int]:
     """Devuelve la función que cuenta tokens con el tokenizador de ESTE modelo.
+
+    Acepta tanto un `SentenceTransformer` (usa su `.tokenizer`) como un
+    tokenizador suelto de `cargar_tokenizador()`, que es la vía barata.
 
     Es lo que `chunking.chunker` espera recibir en `contar_tokens`. Se cuenta
     **con los tokens especiales** (`<s>` y `</s>`) porque el modelo los añade al
@@ -122,7 +146,8 @@ def contador_de_tokens(modelo) -> Callable[[str], int]:
     inglés y portugués, y con un tope de 512 los fragmentos en español se
     pasarían.
     """
-    tokenizador = modelo.tokenizer
+    # getattr con defecto: si ya es un tokenizador, se usa tal cual.
+    tokenizador = getattr(modelo, "tokenizer", modelo)
 
     def contar(texto: str) -> int:
         return len(tokenizador.encode(texto, add_special_tokens=True))

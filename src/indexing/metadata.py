@@ -128,10 +128,12 @@ if __name__ == "__main__":
     # `--tokens` en el chunker): la Tabla 1 pide tokens, no palabras.
     contar = None
     if "--tokens" in sys.argv[1:]:
-        from embedding.encoder import cargar_modelo, contador_de_tokens
+        # Solo el tokenizador (~17 MB), no los pesos del modelo (4,35 GB):
+        # contar tokens no necesita la red neuronal.
+        from embedding.encoder import cargar_tokenizador, contador_de_tokens
 
-        print("cargando el tokenizador del encoder…")
-        contar = contador_de_tokens(cargar_modelo())
+        print("cargando el tokenizador del encoder (~17 MB)…")
+        contar = contador_de_tokens(cargar_tokenizador())
 
     print(f"origen : {CHUNKS}")
     print(f"salida : {METADATA}")

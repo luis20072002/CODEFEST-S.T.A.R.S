@@ -42,6 +42,7 @@ from pathlib import Path
 
 from core.chunk import TABLA1_FIELDS
 from core.store import read_chunks
+from embedding.encoder import EMBEDDINGS
 from indexing.faiss_index import INDICE
 from indexing.metadata import CHUNKS, METADATA
 
@@ -80,19 +81,50 @@ def main() -> int:
           else "   ✖ FALLA: no coinciden — el mapeo de §5.3 no puede ser correcto")
 
     # ── B. ida y vuelta ─────────────────────────────────────────────────────
-    print(f"\n{linea}\nB. IDA Y VUELTA — recuperar el vector i debe devolver i")
+    print(f"\n{linea}\nB. IDA Y VUELTA — buscar la fila i de embeddings.npy debe devolver i")
     paso = max(1, indice.ntotal // MUESTRAS_IDA_VUELTA)
     posiciones = list(range(0, indice.ntotal, paso))[:MUESTRAS_IDA_VUELTA]
-    # reconstruct() devuelve el vector tal como lo guarda el índice.
-    consultas = np.vstack([indice.reconstruct(int(i)) for i in posiciones])
-    _, encontrados = indice.search(consultas, 1)
-    fallos_b = [(int(p), int(e[0])) for p, e in zip(posiciones, encontrados) if int(e[0]) != p]
+
+    # ⚠️ Se consulta con los vectores de `embeddings.npy`, NO con
+    # `indice.reconstruct(i)`. La primera versión de esta prueba usaba
+    # `reconstruct()` y era mucho más débil de lo que parecía: devuelve lo que
+    # el índice guarda en la posición i, así que buscar eso encuentra i
+    # **aunque el índice estuviera construido a partir de otra cosa**. Solo
+    # comprobaba la coherencia interna de FAISS.
+    # Partiendo del `.npy` sí se comprueba lo que importa: que la fila i del
+    # archivo que produjo el encoder acabó en la posición i del índice.
+    fuente = np.load(EMBEDDINGS, mmap_mode="r")
+    if fuente.shape[0] != indice.ntotal:
+        print(f"   ✖ FALLA: embeddings.npy tiene {fuente.shape[0]:,} filas y el índice "
+              f"{indice.ntotal:,}")
+        return 1
+    consultas = np.ascontiguousarray(fuente[posiciones], dtype=np.float32)
+    puntuaciones, encontrados = indice.search(consultas, 1)
+
+    fallos_b = []
+    empates = 0
+    for p, e, s in zip(posiciones, encontrados, puntuaciones):
+        obtenido = int(e[0])
+        if obtenido == p:
+            continue
+        # Un empate entre vectores IDÉNTICOS no es un desalineamiento: FAISS
+        # devuelve el de índice más bajo, y es lo correcto. El corpus tiene
+        # 3.597 chunks con texto repetido (`ESTADO.md` §15), así que esto pasa
+        # de verdad — 7 de 200 en la primera corrida, todos duplicados reales.
+        if np.array_equal(indice.reconstruct(obtenido), consultas[posiciones.index(p)]):
+            empates += 1
+            continue
+        fallos_b.append((int(p), obtenido, float(s[0])))
+
     if fallos_b:
-        print(f"   ✖ FALLA: {len(fallos_b)} de {len(posiciones)} no se recuperan a sí mismos")
-        for esperado, obtenido in fallos_b[:10]:
-            print(f"     posición {esperado} → devolvió {obtenido}")
+        print(f"   ✖ FALLA: {len(fallos_b)} de {len(posiciones)} apuntan a otro vector")
+        for esperado, obtenido, punt in fallos_b[:10]:
+            print(f"     posición {esperado} → devolvió {obtenido} (coseno {punt:.6f})")
     else:
-        print(f"   ✔ PASA: las {len(posiciones)} posiciones probadas se recuperan a sí mismas")
+        print(f"   ✔ PASA: las {len(posiciones)} posiciones probadas apuntan a su vector")
+    if empates:
+        print(f"   (informativo: {empates} resolvieron a un duplicado exacto — "
+              f"vector idéntico, no es desalineamiento)")
 
     # ── C, D, E: recorrido conjunto de metadata y chunks ────────────────────
     obligatorios = set(TABLA1_FIELDS.values())
