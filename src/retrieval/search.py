@@ -537,8 +537,19 @@ class Buscador:
 
             vistos_por_documento[c["doc_id"]] = vistos_por_documento.get(c["doc_id"], 0) + 1
             usados.add(c["chunk_id"])
+            # ⚠️ `idioma` tiene que viajar hasta aquí. Este `dict` se
+            # reconstruye desde cero —no se copia el candidato— porque `text`
+            # ya no es el del chunk sino el sub-fragmento de ≤250 palabras. Al
+            # reconstruirlo se perdía `idioma`, y eso rompió en silencio el
+            # barrido de `tools/barrer_factor_idioma.py`: contaba 0 fragmentos
+            # fuera de es/en en todas las configuraciones, incluida la de
+            # referencia, donde hay 16 medidos (`ESTADO.md` §17).
+            #
+            # No contamina la salida: `Resultado.to_json()` construye los
+            # campos de la Tabla 2 explícitamente y no vuelca este dict.
             salida.append({"chunk_id": c["chunk_id"], "doc_id": c["doc_id"],
-                           "text": texto, "score": c["score"]})
+                           "text": texto, "score": c["score"],
+                           "idioma": c.get("idioma")})
             return True
 
         # Primera pasada: con el tope, que es lo que da variedad.

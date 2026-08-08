@@ -151,6 +151,25 @@ def idiomas_de(resultado) -> List[Optional[str]]:
     return [f.get("idioma") for f in resultado.fragments]
 
 
+def iguales(a: Dict[str, dict], b: Dict[str, dict]) -> bool:
+    """¿Dos corridas producen exactamente la misma salida?
+
+    Existe porque la primera corrida del barrido (2026-08-08) dio el mismo
+    número de cambios contra la base para 0,97 · 0,95 · 0,90 · 0,80, y «mismo
+    número de cambios» **no demuestra la misma salida**: podrían diferir entre
+    sí y coincidir solo en cuántas listas cambian. Si de verdad son idénticas,
+    no hay razón para elegir el factor más agresivo — y esa es una conclusión
+    que se afirma, no se supone.
+    """
+    for qid in a:
+        if a[qid].documents != b[qid].documents:
+            return False
+        if ([f["chunk_id"] for f in a[qid].fragments]
+                != [f["chunk_id"] for f in b[qid].fragments]):
+            return False
+    return True
+
+
 def resumir(nombre: str, resultados: Dict[str, dict],
             base: Optional[Dict[str, dict]] = None) -> dict:
     """Cuenta lo que interesa de una corrida, comparándola con la base."""
@@ -276,6 +295,7 @@ def main() -> int:
 
     linea = "─" * 78
     base = None
+    anterior = None
     filas = []
     for factor in factores:
         print(f"\n{linea}\nfactor_idioma = {factor}")
@@ -284,6 +304,10 @@ def main() -> int:
         if base is None:
             base = resultados
         fila = resumir(f"×{factor}", resultados, base)
+        # ¿Idéntica a la del factor anterior? Si sí, bajar más no aporta nada.
+        fila["igual_anterior"] = (anterior is not None
+                                  and iguales(resultados, anterior))
+        anterior = resultados
         filas.append(fila)
         print(f"  fragmentos fuera de es/en : {fila['fuera']:3d} de 500 "
               f"({fila['pct_fuera']:.1f}%) en {fila['consultas_afectadas']} consultas")
@@ -297,10 +321,12 @@ def main() -> int:
     # ── La tabla que se copia al informe / a ESTADO.md ──────────────────────
     print(f"\n{linea}\nRESUMEN\n{linea}")
     print(f"{'factor':>8} {'fuera es/en':>12} {'consultas':>10} "
-          f"{'fenómeno':>9} {'docs≠':>6} {'frags≠':>7}")
+          f"{'fenómeno':>9} {'docs≠':>6} {'frags≠':>7}  {'= anterior':>10}")
     for f in filas:
+        marca = "sí ←" if f["igual_anterior"] else ""
         print(f"{f['nombre']:>8} {f['fuera']:>7d}/500 {f['consultas_afectadas']:>10d} "
-              f"{f['corresp']:>8.1f}% {f['movidos_doc']:>6d} {f['movidos_frag']:>7d}")
+              f"{f['corresp']:>8.1f}% {f['movidos_doc']:>6d} {f['movidos_frag']:>7d}  "
+              f"{marca:>10}")
 
     print(f"\n{linea}")
     print("CÓMO LEER ESTO (§17):")
