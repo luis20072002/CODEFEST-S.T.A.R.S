@@ -62,15 +62,16 @@ sys.path.insert(0, str(RAIZ / "src"))
 
 from retrieval.consultas import (CONSULTAS, cargar_consultas,  # noqa: E402
                                  fenomeno_de_consulta)
-from retrieval.search import (BONIFICACION_FENOMENO, INDICE,  # noqa: E402
-                              MAX_POR_DOCUMENTO, METADATA, N_DOCUMENTOS,
-                              N_FRAGMENTOS, Buscador)
+from retrieval.search import (BONIFICACION_FENOMENO, FACTOR_IDIOMA_OTROS,  # noqa: E402
+                              INDICE, MAX_POR_DOCUMENTO, METADATA,
+                              N_DOCUMENTOS, N_FRAGMENTOS, Buscador)
 
 SALIDA = RAIZ / "entrega" / "resultados.jsonl"
 
 
 def generar(consultas, buscador, modelo=None, max_por_documento=MAX_POR_DOCUMENTO,
-            bonificacion=BONIFICACION_FENOMENO):
+            bonificacion=BONIFICACION_FENOMENO,
+            factor_idioma=FACTOR_IDIOMA_OTROS):
     """Produce un objeto de resultado por consulta, en orden.
 
     Con `modelo=None` funciona en **modo simulado**: en vez de codificar la
@@ -81,13 +82,18 @@ def generar(consultas, buscador, modelo=None, max_por_documento=MAX_POR_DOCUMENT
     `bonificacion > 1.0` empuja hacia el fenómeno de la consulta. El fenómeno
     sale de `fenomeno_de_consulta()`, que es una correspondencia **verificada a
     mano** sobre el archivo de ADL, no un campo del archivo.
+
+    `factor_idioma < 1.0` penaliza los fragmentos fuera de {es, en} (§8.7). Va
+    en 1.0 —desactivado— hasta que esté medido; ver `retrieval.search
+    .aplicar_factor_idioma()` y `tools/barrer_factor_idioma.py`.
     """
     import numpy as np
 
     for posicion, (query_id, texto) in enumerate(consultas):
         fenomeno = fenomeno_de_consulta(query_id) if bonificacion != 1.0 else None
         comun = dict(query_id=query_id, max_por_documento=max_por_documento,
-                     fenomeno=fenomeno, bonificacion=bonificacion)
+                     fenomeno=fenomeno, bonificacion=bonificacion,
+                     factor_idioma=factor_idioma)
         if modelo is not None:
             resultado = buscador.buscar_texto(texto, modelo, **comun)
         else:
@@ -113,6 +119,10 @@ def main() -> int:
     parser.add_argument("--bonificacion", type=float, default=BONIFICACION_FENOMENO,
                         help="factor para los documentos del fenómeno de la "
                              "consulta (1.0 = desactivada; útil entre 1.02 y 1.05)")
+    parser.add_argument("--factor-idioma", type=float, default=FACTOR_IDIOMA_OTROS,
+                        help="factor <1.0 que penaliza los fragmentos fuera de "
+                             "es/en (1.0 = desactivado). Elegirlo con "
+                             "tools/barrer_factor_idioma.py, no a ojo")
     parser.add_argument("--simulado", action="store_true",
                         help="NO codifica: prueba de formato sin el modelo")
     args = parser.parse_args()
@@ -129,6 +139,11 @@ def main() -> int:
         print(f"⚠️  bonificación por fenómeno ACTIVADA: ×{args.bonificacion}")
         print("    Depende del reparto q001–q016→F1, q017–q032→F2, q033–q050→F3,")
         print("    verificado a mano sobre el archivo de ADL. Ver ESTADO.md §5.")
+    if args.factor_idioma != 1.0:
+        print(f"⚠️  factor por idioma ACTIVADO: ×{args.factor_idioma} "
+              f"fuera de {{es, en}}")
+        print("    Si este valor no coincide con el que produjo el resultados.jsonl")
+        print("    entregado, §1.4 excluye la entrega. Ver ESTADO.md §17.")
     if len(consultas) != 50:
         # §9.3 exige exactamente 50 líneas. Avisar, no fallar: si ADL entrega
         # otro conjunto, el script debe seguir sirviendo.
@@ -155,7 +170,8 @@ def main() -> int:
     escritas = 0
     with open(temporal, "w", encoding="utf-8", newline="\n") as f:
         for resultado in generar(consultas, buscador, modelo,
-                                 args.max_por_documento, args.bonificacion):
+                                 args.max_por_documento, args.bonificacion,
+                                 args.factor_idioma):
             f.write(json.dumps(resultado.to_json(), ensure_ascii=False))
             f.write("\n")
             escritas += 1

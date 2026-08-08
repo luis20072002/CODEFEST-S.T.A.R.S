@@ -108,6 +108,120 @@ N_FRAGMENTOS = 10
 # jurado lo ejecuta sin pasar `--bonificacion`.
 BONIFICACION_FENOMENO = 1.03
 
+# Idiomas que NO se penalizan. Son los dos en los que vive el contenido
+# relevante del corpus: las 50 consultas están todas en español (`ESTADO.md`
+# §5) y el corpus es 55,0% inglés / 35,1% español (§11). Juntos cubren el
+# 96,8% de los fragmentos que la salida real devuelve (§17).
+IDIOMAS_PREFERIDOS = ("es", "en")
+
+# Factor por el que se multiplica la puntuación de un candidato cuyo `idioma`
+# no está en IDIOMAS_PREFERIDOS.
+#
+# 🔴 **1.0 = DESACTIVADO, y así se queda hasta que esté medido.** Es la
+# disciplina que el proyecto ya aprendió con la bonificación por fenómeno
+# (`ESTADO.md` §21): los factores 1,02 y 1,05 que parecían razonables sobre la
+# aritmética de los cosenos **no hacían nada**, y 1,10 era un filtro
+# disfrazado. Aquí el número se elige con `tools/barrer_factor_idioma.py`, no a
+# ojo.
+#
+# ⚠️ **Y hay una razón de §1.4 para no tocarlo todavía**: el `resultados.jsonl`
+# entregado se generó SIN factor de idioma. Si este valor deja de ser 1.0, el
+# jurado —que corre `generador.py` sin banderas— produciría un archivo distinto
+# al entregado y la entrega **se excluye**. Cambiar este número obliga a
+# regenerar el entregable y a re-validarlo con `tools.verificar_resultados`.
+FACTOR_IDIOMA_OTROS = 1.0
+
+
+def aplicar_factor_idioma(
+    candidatos: List[Dict],
+    factor_otros: float = FACTOR_IDIOMA_OTROS,
+    preferidos: tuple = IDIOMAS_PREFERIDOS,
+) -> List[Dict]:
+    """Baja la puntuación de los candidatos que no están en es/en y reordena.
+
+    ────────────────────────────────────────────────────────────────────────
+    EL PROBLEMA QUE CORRIGE, MEDIDO SOBRE LA SALIDA REAL
+
+    SWF y SIPRI publican **el mismo informe en varios idiomas**, y en el corpus
+    son documentos distintos con `doc_id` distintos. Una consulta puede gastar
+    ranks en versiones traducidas del mismo contenido.
+
+    Medido el 2026-08-08 resolviendo los 500 `chunk_id` de la salida contra el
+    campo `idioma` del `metadata.jsonl` (`ESTADO.md` §17):
+
+        en 66,2%  ·  es 30,6%  ·  zh/fr/pt/ru/ko  16 fragmentos = 3,2%
+
+    Solo **8 de las 50 consultas** traen algo fuera de {es, en}, y no es un
+    problema genérico de traducciones sino **una familia de documentos**: los
+    resúmenes ejecutivos del *Global Counterspace Capabilities* de SWF,
+    publicados en seis idiomas (`-por`, `-fre`, `-spa`, `-chinese`, …).
+
+    Los dos casos que de verdad cuestan:
+
+    - **`q024` duele a nivel DOCUMENTO, que es donde se paga F1@3 (§10.2.2).**
+      Sus tres puestos de `documents` son el execsum español del 2025, el
+      portugués del 2026 y un CSIS. El informe completo en inglés existe en el
+      corpus (`F2-SWF-124`) pero no entra.
+    - **`q022` devuelve `SWF_2025-executive-summary-chinese.pdf` en el rank 1**
+      para una consulta en español, teniendo la versión inglesa en el rank 2.
+
+    ────────────────────────────────────────────────────────────────────────
+    POR QUÉ UN FACTOR Y NO UN FILTRO NI UN REORDENAMIENTO POR IDIOMA
+
+    Es el mismo razonamiento que `aplicar_bonificacion()`: **el fallo de un
+    filtro es irreversible.** Con un factor, si una traducción es el único
+    candidato que responde a la consulta, **sobrevive** — no tiene contra quién
+    competir. Solo pierde cuando hay un equivalente en es/en cerca en
+    puntuación, que es exactamente el caso que se quiere corregir.
+
+    🔴 **Se DESCARTÓ reordenar globalmente es → en → otro.** El problema está
+    en 8 consultas y un criterio de orden por idioma se aplica a las 50. Choca
+    además con lo que §17 validó con datos: la mezcla de idiomas de cada
+    consulta **sigue a dónde vive el contenido relevante**, porque BGE-M3
+    ordena por significado. §10.2.1 juzga por el campo `text` y no premia el
+    español, y **NDCG@10 es sensible al orden** (fórmula 8): subir un fragmento
+    en español por encima de uno en inglés mejor puntuado cuesta NDCG en toda
+    consulta mixta a cambio de nada medible.
+
+    ────────────────────────────────────────────────────────────────────────
+    POR QUÉ `idioma = None` NO SE PENALIZA
+
+    ⚠️ `None` significa «el detector no tuvo señal suficiente», **no «idioma
+    extranjero»**. Son 18 documentos (§11), y penalizarlos sería castigar un
+    fallo de `py3langid`, no una traducción.
+
+    Es la misma razón por la que esto es un factor suave y no un filtro:
+    `ESTADO.md` §11 mide **~19 documentos (1%) con la etiqueta de idioma mal**
+    —los cuatro en inglés detectados como `la` y el `af` de las letras
+    duplicadas—. Con un filtro, esos textos en inglés quedarían inalcanzables
+    por un error del detector. Comprobado el 2026-08-08: ninguno de los cinco
+    aparece en la salida actual, así que hoy no cuesta nada — pero el diseño no
+    debe depender de esa suerte.
+
+    §8.7 respalda esto explícitamente: permite «filtrar por campo `fenomeno`,
+    `formato`, rango de fechas, **idioma**». Es metadata, no un modelo, así que
+    no roza §8.3.
+    """
+    # Atajo: con el factor en 1.0 esto no hace nada, y devolver la lista tal
+    # cual evita copiar 200 diccionarios y reordenar para nada.
+    if factor_otros == 1.0:
+        return candidatos
+
+    ajustados = []
+    for c in candidatos:
+        copia = dict(c)          # no se muta la lista del llamante
+        idioma = c.get("idioma")
+        # La condición tiene dos partes a propósito: `is not None` protege a
+        # los documentos sin idioma detectado (ver arriba) y `not in` es lo que
+        # de verdad penaliza.
+        if idioma is not None and idioma not in preferidos:
+            copia["score"] = c["score"] * factor_otros
+        ajustados.append(copia)
+
+    # Reordenar, porque todo lo de aguas abajo —agregación a documento y
+    # selección de fragmentos— asume orden por puntuación descendente.
+    return _ordenar_por_puntuacion(ajustados)
+
 
 def aplicar_bonificacion(candidatos: List[Dict], fenomeno: Optional[int],
                          factor: float = BONIFICACION_FENOMENO) -> List[Dict]:
@@ -306,6 +420,12 @@ class Buscador:
                 "chunk_id": registro["chunk_id"],
                 "doc_id": registro["doc_id"],
                 "text": registro["texto"],
+                # `idioma` es el campo extra que §3.4 autoriza y que se
+                # conservó justamente porque §8.7 contempla filtrar por él
+                # (`ESTADO.md` §14). Lo consume `aplicar_factor_idioma()`.
+                # `.get()` y no `[...]`: es opcional y vale `None` en los 18
+                # documentos sin señal de idioma suficiente (§11).
+                "idioma": registro.get("idioma"),
             })
         return salida
 
@@ -447,6 +567,7 @@ class Buscador:
         estrategia: str = "max",
         fenomeno: Optional[int] = None,
         bonificacion: float = BONIFICACION_FENOMENO,
+        factor_idioma: float = FACTOR_IDIOMA_OTROS,
     ) -> Resultado:
         """De un vector de consulta a un `Resultado` completo.
 
@@ -454,9 +575,17 @@ class Buscador:
         esperado. Se aplica **una sola vez, sobre la lista de candidatos**, así
         que afecta por igual a la agregación de documentos y a la selección de
         fragmentos: las dos parten de la misma lista ya reordenada.
+
+        `factor_idioma` hace lo propio con los idiomas fuera de {es, en}
+        (§8.7). Los dos ajustes son **multiplicativos e independientes**, así
+        que el orden en que se aplican no cambia el resultado: un candidato de
+        otro fenómeno y en coreano acaba con `score × bonificacion ×
+        factor_idioma` de todas formas. Se reordena dos veces y gana el último
+        orden, que es el correcto.
         """
         candidatos = self.candidatos_suficientes(vector, k, N_DOCUMENTOS)
         candidatos = aplicar_bonificacion(candidatos, fenomeno, bonificacion)
+        candidatos = aplicar_factor_idioma(candidatos, factor_idioma)
         return Resultado(
             query_id=query_id,
             documents=self.agregar_documentos(candidatos, N_DOCUMENTOS, estrategia),
