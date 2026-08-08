@@ -15,3 +15,8 @@ entrega/base_vectorial/
 # Salidas de experimento del generador (--simulado, --bonificacion, etc.).
 # El entregable es `entrega/resultados.jsonl` a secas, y ese SI se rastrea.
 entrega/resultados_*.jsonl
+
+# Temporales de escritura. Los modulos de core/store.py, indexing/metadata.py y
+# el generador escriben a .parcial y renombran; si una corrida se corta, el
+# residuo se queda ahi y no debe commitearse.
+*.parcial

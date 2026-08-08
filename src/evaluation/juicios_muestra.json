@@ -1,0 +1,71 @@
+{
+  "_metodo": "Pooling (metodologia TREC): se junta todo lo que devuelven las configuraciones a comparar y se etiqueta ese conjunto. Permite comparar dos sistemas ENTRE SI de forma justa, porque los dos se puntuan sobre el mismo material etiquetado. NO da valores absolutos de NDCG ni F1 comparables con los del jurado.",
+  "_quien": "Etiquetado a mano por el equipo el 2026-08-07, leyendo el titulo y el primer fragmento de cada documento frente al texto de la consulta. NO es el ground truth de ADL, que segun §10.1 no es publico.",
+  "_escala": "2 = responde directamente a la consulta | 1 = tema adyacente, aporta algo | 0 = no responde",
+  "_alcance": "Solo las 7 consultas en las que las configuraciones 1.03 y 1.05 devuelven documentos distintos. En las otras 43 las dos dan lo mismo y no discriminan.",
+  "_clave": "Las claves son doc_id por comodidad de revision; la comparacion se hace por `fuente`, como exige §10.2.2, traduciendo con el metadata.jsonl.",
+
+  "q001": {
+    "_consulta": "¿Como esta transformando la IA la capacidad de los Estados para prevenir, detectar y contrarrestar amenazas NBQR?",
+    "F3-SIPRI-111": 2,
+    "F3-SIPRI-075": 2,
+    "F1-AIINDEX-065": 1,
+    "F1-DAIO-009": 1,
+    "F1-DAIO-031": 0,
+    "_razon": "Las dos de SIPRI van del nexo IA-nuclear, que es la N de NBQR. AIINDEX es una respuesta a una consulta publica sobre desarrollo de IA (politica de I+D), y DAIO-031 es un panorama del Golfo Arabe: ninguno trata deteccion de amenazas NBQR."
+  },
+
+  "q003": {
+    "_consulta": "¿Que lecciones dejan los conflictos recientes sobre el empleo de IA en operaciones militares?",
+    "F3-CEEEP-004": 2,
+    "F1-DAIO-023": 2,
+    "F1-DAIO-014": 1,
+    "F1-DAIO-009": 1,
+    "_razon": "CEEEP-004 abre literalmente con 'Los recientes conflictos en el mundo demuestran...'. DAIO-023 es Ucrania, el conflicto reciente por excelencia en IA militar. Alemania y EEUU son panoramicas nacionales, no lecciones de conflicto."
+  },
+
+  "q006": {
+    "_consulta": "¿Que riesgos operacionales y juridicos implica incorporar IA en inteligencia militar sin doctrina consolidada?",
+    "F1-CSET-103": 2,
+    "F1-CSET-104": 2,
+    "F3-SIPRI-010": 2,
+    "F1-DAIO-029": 1,
+    "_razon": "CSET-103 y su resumen CSET-104 van de riesgos en la decision militar con IA. SIPRI-010 cubre el lado JURIDICO explicitamente (sesgo y cumplimiento del DIH), que la consulta pide por su nombre. Pakistan es panoramica nacional."
+  },
+
+  "q007": {
+    "_consulta": "¿Que desafios plantea el empleo de sistemas autonomos frente al DIH y la atribucion de responsabilidades?",
+    "F3-SIPRI-100": 2,
+    "F1-ATLCOUNCIL-009": 1,
+    "F3-SIPRI-016": 1,
+    "F1-DAIO-018": 0,
+    "_razon": "SIPRI-100 es exactamente el tema (seleccion de objetivos por sistemas autonomos y recomendaciones de politica), aunque este en coreano: §10.2.1 juzga por el contenido del texto. ATLCOUNCIL y SIPRI-016 rozan el tema. Finlandia no."
+  },
+
+  "q010": {
+    "_consulta": "¿Que capacidades basadas en IA fortalecen la deteccion, identificacion y neutralizacion de drones?",
+    "F1-DAIO-023": 2,
+    "F1-DAIO-026": 1,
+    "F1-DAIO-018": 1,
+    "F3-CEEEP-010": 0,
+    "_razon": "Ucrania es donde mas experiencia hay en contra-dron con IA. Iran y Finlandia pueden mencionarlo de pasada. CEEEP-010 es ciberdefensa, no drones."
+  },
+
+  "q027": {
+    "_consulta": "¿Que desafios plantea el uso de IA en las operaciones espaciales?",
+    "F1-CSET-065": 2,
+    "F2-CSIS-100": 1,
+    "F2-CSIS-151": 1,
+    "F2-SWF-078": 0,
+    "_razon": "CSET-065 es 'AI on the Edge of Space': IA y operaciones espaciales, el tema exacto. SWF-078 es un inventario de armas antisatelite de 2018 que no trata de IA. Es el caso que mejor ilustra el riesgo de empujar por fenomeno."
+  },
+
+  "q039": {
+    "_consulta": "¿Que capacidades han fortalecido los grupos armados para consolidar y expandir su control territorial?",
+    "F3-ALERTAS-390": 2,
+    "F3-MAPPOEA-028": 2,
+    "F3-RESDAL-071": 1,
+    "F2-CSIS-087": 0,
+    "_razon": "ALERTAS (Defensoria del Pueblo) y MAPP/OEA documentan directamente el control territorial de grupos armados en Colombia. RESDAL es un atlas comparativo de defensa. CSIS-087 es la Estrategia de Defensa Nacional de EEUU: nada que ver."
+  }
+}

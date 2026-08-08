@@ -96,10 +96,17 @@ N_DOCUMENTOS = 3
 N_FRAGMENTOS = 10
 
 # Factor por el que se multiplica la puntuación de los candidatos que
-# pertenecen al fenómeno de la consulta. **1.0 = desactivada**, que es el valor
-# por defecto a propósito: no se puede medir si mejora o empeora sin el ground
-# truth. Ver `aplicar_bonificacion()` para el porqué y para elegir el valor.
-BONIFICACION_FENOMENO = 1.0
+# pertenecen al fenómeno de la consulta.
+#
+# **1.03, fijado el 2026-08-07 tras compararlo con 1.00, 1.05 y 1.10.** No es un
+# valor elegido a ojo: sale de puntuar las cuatro configuraciones con las
+# métricas de §10 contra juicios de relevancia etiquetados a mano
+# (`evaluation/juicios_muestra.json`). Detalle en `ESTADO.md` §21.
+#
+# ⚠️ **Este valor tiene que coincidir con el que produjo el `resultados.jsonl`
+# entregado.** §1.4 excluye la entrega si `generador.py` no la reproduce, y el
+# jurado lo ejecuta sin pasar `--bonificacion`.
+BONIFICACION_FENOMENO = 1.03
 
 
 def aplicar_bonificacion(candidatos: List[Dict], fenomeno: Optional[int],
