@@ -1,0 +1,66 @@
+# CODEFEST AD ASTRA 2026 · Etapa 1 — Equipo S.T.A.R.S
+# DEPENDENCIAS MÍNIMAS PARA REPRODUCIR `resultados.jsonl`
+#
+#     pip install -r requirements.txt
+#     python generador.py
+#     # → resultados.jsonl (50 líneas, §9.3)
+#
+# Python 3.13.0 (probado también en 3.12, el de Google Colab).
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# POR QUÉ ESTE ARCHIVO ES CORTO, Y POR QUÉ ESO ES DELIBERADO
+#
+# §1.4 define `generador.py` como un «Script Python que utilice el índice, lea
+# el archivo de consultas y genere el archivo de resultados». **Usa el índice ya
+# construido; no reconstruye el corpus.** Todo el trabajo de extracción, OCR,
+# limpieza, chunking y codificación ocurrió aguas arriba y su resultado va
+# horneado dentro de `base_vectorial/`.
+#
+# Consecuencia: aquí NO hacen falta `pdfplumber`, `PyMuPDF`, `pytesseract`,
+# `openpyxl`, `mapbox-vector-tile` ni el binario de Tesseract. Declararlos sería
+# darle a quien reproduzca la entrega más superficie para que algo falle, y
+# **cualquier fallo de instalación impide correr el generador**, que es
+# exactamente lo que §1.4 castiga con la exclusión.
+#
+# Los cuatro paquetes de abajo son los ÚNICOS imports de terceros en toda la
+# cadena que `generador.py` arrastra. Verificado leyendo los imports de
+# `generador.py`, `retrieval/consultas.py`, `retrieval/search.py`,
+# `retrieval/fragmentos.py`, `embedding/encoder.py`, `chunking/chunker.py` y
+# `core/chunk.py`: los tres últimos no importan nada de terceros.
+#
+# La lista completa que usamos para CONSTRUIR el índice está en el
+# `requirements.txt` de la raíz del repositorio, y no hace falta aquí.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# ⚠️ EL MODELO SE DESCARGA EN TIEMPO DE EJECUCIÓN
+#
+# `sentence-transformers` baja `BAAI/bge-m3` (4,35 GB) de HuggingFace la primera
+# vez. La **revisión está fijada por sha** en `src/embedding/encoder.py`
+# (`5617a9f61b028005a4858fdac845db406aefb181`): sin eso se podría descargar otra
+# versión del modelo, los vectores de la consulta dejarían de vivir en el mismo
+# espacio que los del índice y el ranking cambiaría **sin dar ningún error**.
+#
+# Codificar las 50 consultas cuesta ~8 min en CPU y segundos en GPU.
+#
+# ⚠️ `faiss-cpu`, NUNCA `faiss-gpu`: esto se ejecuta en la máquina de quien
+# evalúa y puede no haber GPU. Un índice plano (`IndexFlatIP`) no se entrena, así
+# que la GPU no aportaría nada.
+#
+# ⚠️ NO añadir `pathlib`: el paquete `pathlib` de PyPI es un backport viejo que
+# puede sombrear el `pathlib` de la librería estándar. Estuvo aquí por error.
+
+# ── Los cuatro imports directos ──────────────────────────────────────────────
+faiss-cpu==1.15.0
+sentence-transformers==5.7.0
+pypdf==6.15.0
+numpy==2.5.1
+
+# ── Transitivas que sí conviene fijar ────────────────────────────────────────
+# `sentence-transformers` las instala solo, pero son las que determinan los
+# valores numéricos de los embeddings. Fijarlas es lo que hace que el ranking
+# sea el mismo y no solo «parecido», que es lo que §1.4 exige.
+torch==2.13.0
+transformers==5.14.1
+tokenizers==0.22.2
+safetensors==0.8.0
+huggingface_hub==1.26.0
