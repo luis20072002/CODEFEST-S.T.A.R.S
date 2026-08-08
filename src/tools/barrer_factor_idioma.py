@@ -60,7 +60,7 @@ from typing import Dict, List, Optional
 import numpy as np
 
 from retrieval.consultas import CONSULTAS, cargar_consultas, fenomeno_de_consulta
-from retrieval.search import (BONIFICACION_FENOMENO, IDIOMAS_PREFERIDOS,
+from retrieval.search import (BONIFICACION_FENOMENO, IDIOMAS_PREFERIDOS, INDICE,
                               MAX_POR_DOCUMENTO, Buscador)
 
 RAIZ = Path(__file__).resolve().parents[1]
@@ -233,6 +233,31 @@ def main() -> int:
 
     if len(vectores) != len(consultas):
         print(f"⚠️  {len(vectores)} vectores para {len(consultas)} consultas.")
+        return 1
+
+    # ⚠️ Las dos mitades de esta herramienta necesitan cosas DISTINTAS, y hay
+    # que separarlas: `--guardar` necesita el modelo (4,35 GB) pero no el
+    # índice; el barrido necesita el índice (373 MB) pero no el modelo. Están
+    # pensadas para correr en máquinas distintas, así que quedarse sin índice
+    # después de haber cacheado los vectores **no es un fallo**: es el reparto
+    # de trabajo esperado.
+    #
+    # Sin esta comprobación, `faiss.read_index()` revienta con un RuntimeError
+    # que parece un problema de dependencias y no lo es. Pasó en Colab el
+    # 2026-08-08: `entrega/base_vectorial/` está en el `.gitignore` porque los
+    # 373 MB del índice no caben en GitHub, así que un clon nuevo no lo trae.
+    if not INDICE.is_file():
+        print(f"\nNo existe el índice en {INDICE}")
+        print("La base vectorial NO está en el repositorio: `entrega/base_vectorial/`")
+        print("está en el .gitignore porque index.faiss son ~373 MB y el límite")
+        print("por archivo de GitHub son 100 MB.")
+        if args.guardar:
+            print(f"\n✔ Pero los vectores YA están guardados, que es la parte que")
+            print(f"  necesitaba el modelo. Tráete este archivo (200 KB) a una")
+            print(f"  máquina que tenga el índice y corre el barrido allí:")
+            print(f"      {CACHE}")
+            print(f"      py -m tools.barrer_factor_idioma 0.99 0.97 0.90")
+            return 0        # No es un error: el trabajo caro se completó.
         return 1
 
     print("\ncargando índice y metadata…")
