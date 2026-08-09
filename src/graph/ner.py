@@ -12,11 +12,11 @@ QUÉ MIDE, Y POR QUÉ CADA COSA
 
 1. **`max_len` real del modelo.** El presupuesto de la unidad se fijó en 320
    tokens suponiendo que la ventana es 384. Si es otra, el presupuesto cambia.
-2. **Si el prompt de etiquetas ocupa la ventana.** GLiNER concatena los tipos
-   antes del texto. Con nueve etiquetas eso puede comerse 40-50 tokens, y
-   entonces el presupuesto de TEXTO tiene que bajar. Se comprueba
-   empíricamente: se busca una entidad puesta **al final** de un texto largo, con
-   pocas etiquetas y con muchas. Si con muchas desaparece, el prompt desplaza.
+2. **El presupuesto real de texto**, barriendo 384 → 224. Medido el 2026-08-09:
+   GLiNER truncó unidades que el tokenizador contaba en 320 y él contó en **401**,
+   porque su cuenta incluye el prompt de etiquetas y sus propios marcadores. El
+   presupuesto **no se puede deducir de `max_len`**: se elige como el mayor valor
+   donde el contador de truncamientos da cero con las nueve etiquetas.
 3. **Unidades por segundo**, con el conjunto de etiquetas real y no con dos de
    juguete: el coste crece con el número de etiquetas.
 4. **Etiquetas en inglés frente a español.** El corpus es trilingüe y GLiNER es
@@ -38,12 +38,13 @@ primero ya viaja a la máquina de cálculo porque `generador.py` lo necesita, y 
 separar prosa de tabular, y el `chunk_id` que §7.2 exige en cada tripleta.
 
 ────────────────────────────────────────────────────────────────────────────────
-🔴 ANTES DE LA PASADA DEFINITIVA: FIJAR LA REVISIÓN
+LA REVISIÓN ESTÁ FIJADA (§1.4)
 
-`REVISION` está en `None`, y así **no cumple §1.4**. Es el mismo riesgo que con
-BGE-M3: sin fijar el commit, otra descarga puede dar otro modelo y otras
-entidades, en silencio. El banco **imprime el sha resuelto**; hay que pegarlo
-aquí abajo antes de la corrida buena.
+`REVISION = "443d26d6…"`, resuelta el 2026-08-09. Es el mismo riesgo que con
+BGE-M3 (§8): sin fijar el commit, otra descarga puede dar otro modelo y otras
+entidades **en silencio**. El banco imprime el sha vigente en HuggingFace y lo
+compara con el fijado; si dejan de coincidir, el repo del modelo se movió y hay
+que decidir si se actualiza.
 """
 
 import json
@@ -190,24 +191,78 @@ def unidades_de_registro(registro: dict, contar_tokens,
                                     presupuesto=presupuesto)]
 
 
-def muestra_de_unidades(n: int, contar_tokens, solo_biblio: bool = False,
-                        paso: int = 37) -> List[dict]:
-    """Toma `n` unidades repartidas por el corpus, de forma determinista.
+def _sorteo_estable(doc_id: str, divisor: int) -> bool:
+    """¿Este documento entra en la muestra? Determinista entre ejecuciones.
 
-    `paso` salta registros para que la muestra no salga toda del primer
-    documento, que en este corpus sería AI Index y no representa nada.
+    Se usa un hash **estable** y no `hash()`, que en Python está aleatorizado por
+    proceso salvo que se fije `PYTHONHASHSEED`: con `hash()` la muestra cambiaría
+    en cada corrida y las cifras del banco no serían comparables entre sí.
+    """
+    import hashlib
+    h = hashlib.md5(doc_id.encode("utf-8")).hexdigest()
+    return int(h, 16) % divisor == 0
+
+
+def muestra_de_unidades(n: int, contar_tokens, solo_biblio: bool = False,
+                        por_documento: int = 2, divisor: int = 7) -> List[dict]:
+    """Toma `n` unidades repartidas por **documentos**, de forma determinista.
+
+    🔴 **El reparto es por documento y no por registro, y la diferencia importa.**
+    La primera versión saltaba un registro de cada 37, pero los documentos de AI
+    Index tienen **miles de chunks cada uno**, así que la muestra entera salía de
+    tres documentos de AI Index — prosa estadística sobre bibliometría, donde no
+    hay ni un sistema de armas ni un tratado. La medición de tipos de entidad que
+    produjo era, por tanto, una medición del AI Index y no del corpus.
+
+    `por_documento` limita cuántas unidades aporta cada documento, de modo que
+    para llenar la muestra haya que recorrer muchos documentos distintos.
+
+    🔴 **Y con eso no basta: hace falta sortear Y estratificar.**
+    `metadata.jsonl` va ordenado por `doc_id`, y eso sesgó la muestra dos veces:
+
+    - limitando solo las unidades por documento, salía de los **99 primeros
+      documentos** del archivo — 53 % AI Index, cero F2 y cero F3;
+    - añadiendo el sorteo por hash mejoró a 8 observatorios, pero **seguía sin un
+      solo documento de F3**, que son 888 de los 1.826 y se llevan 18 de las 50
+      consultas. Las 200 unidades se llenaban antes de llegar a `F3-*`.
+
+    Así que la cuota es **por fenómeno**: cada uno aporta como mucho un tercio de
+    la muestra, y el recorrido sigue aunque F1 ya esté lleno. §1.3 define el
+    corpus como los tres fenómenos; una muestra que solo mide uno no mide el
+    corpus.
     """
     unidades: List[dict] = []
-    for i, r in enumerate(leer_registros(excluir_biblio=not solo_biblio)):
+    vistos: Dict[str, int] = {}
+    cuota = max(1, n // 3)
+    por_fenomeno: Dict[int, int] = {1: 0, 2: 0, 3: 0}
+
+    for r in leer_registros(excluir_biblio=not solo_biblio):
         if solo_biblio:
             es_biblio = (r["formato"] in FORMATOS_TABULARES
                          and BIBLIOGRAFICO.search(r["texto"][:1200]))
             if not es_biblio:
                 continue
-        elif i % paso:
+        elif not _sorteo_estable(r["doc_id"], divisor):
             continue
-        unidades.extend(unidades_de_registro(r, contar_tokens))
-        if len(unidades) >= n:
+
+        fen = int(r["fenomeno"])
+        if not solo_biblio and por_fenomeno.get(fen, 0) >= cuota:
+            continue                    # este fenómeno ya llenó su cuota
+        d = r["doc_id"]
+        if vistos.get(d, 0) >= por_documento:
+            continue
+        nuevas = unidades_de_registro(r, contar_tokens)[:por_documento]
+        if not nuevas:
+            continue
+
+        vistos[d] = vistos.get(d, 0) + len(nuevas)
+        por_fenomeno[fen] = por_fenomeno.get(fen, 0) + len(nuevas)
+        unidades.extend(nuevas)
+        # Solo se corta cuando los TRES han llenado, no al alcanzar `n`: cortar
+        # antes es lo que dejaba F3 fuera.
+        if solo_biblio and len(unidades) >= n:
+            break
+        if all(c >= cuota for c in por_fenomeno.values()):
             break
     return unidades[:n]
 
@@ -215,23 +270,43 @@ def muestra_de_unidades(n: int, contar_tokens, solo_biblio: bool = False,
 # ── Inferencia ───────────────────────────────────────────────────────────────
 
 def extraer_entidades(modelo, textos: Sequence[str], etiquetas: Sequence[str],
-                      umbral: float = UMBRAL, lote: int = 8) -> List[List[dict]]:
-    """Pasa GLiNER por una lista de textos y devuelve entidades por texto.
+                      umbral: float = UMBRAL, lote: int = 8
+                      ) -> Tuple[List[List[dict]], int]:
+    """Pasa GLiNER por una lista de textos. Devuelve `(entidades, truncados)`.
 
-    La salida de `predict_entities` ya trae `start`, `end`, `text` y `label`, que
-    es exactamente lo que `graph.relations.extraer_relaciones()` espera.
+    La salida de las entidades ya trae `start`, `end`, `text` y `label`, que es
+    exactamente lo que `graph.relations.extraer_relaciones()` espera.
+
+    🔴 **Se cuentan los truncamientos, y eso es la mitad del valor de esta
+    función.** GLiNER avisa con un `UserWarning` —«Sentence of length 401 has been
+    truncated to 384»— y en un cuaderno ese aviso se pierde entre el ruido. Pero
+    un texto truncado significa que **la última parte de la unidad no se escanea y
+    sus entidades no existen**, sin ningún error. Contarlos convierte el
+    presupuesto en algo que se elige con datos: se baja hasta que el contador da
+    cero.
+
+    ⚠️ La cuenta de GLiNER **no es la del tokenizador**: incluye el prompt de
+    etiquetas y sus propios marcadores. Una unidad de 320 tokens medidos con
+    mDeBERTa puede darle 401 a GLiNER. Por eso el presupuesto no se puede deducir
+    de `max_len`, hay que medirlo aquí.
     """
+    import warnings
+
     salida: List[List[dict]] = []
+    truncados = 0
     for i in range(0, len(textos), lote):
         trozo = list(textos[i:i + lote])
-        try:
-            salida.extend(modelo.batch_predict_entities(
-                trozo, list(etiquetas), threshold=umbral))
-        except AttributeError:                 # versiones sin batch_
-            salida.extend(modelo.predict_entities(t, list(etiquetas),
-                                                  threshold=umbral)
-                          for t in trozo)
-    return salida
+        with warnings.catch_warnings(record=True) as avisos:
+            warnings.simplefilter("always")
+            try:
+                salida.extend(modelo.batch_predict_entities(
+                    trozo, list(etiquetas), threshold=umbral))
+            except AttributeError:             # versiones sin batch_
+                salida.extend(modelo.predict_entities(t, list(etiquetas),
+                                                      threshold=umbral)
+                              for t in trozo)
+        truncados += sum(1 for a in avisos if "truncated" in str(a.message))
+    return salida, truncados
 
 
 # ── Banco ────────────────────────────────────────────────────────────────────
@@ -276,20 +351,33 @@ if __name__ == "__main__":
         if margen < 60:
             print("  ⚠️ margen escaso para 9 etiquetas: bajar PRESUPUESTO")
 
-    # ── 3. ¿El prompt de etiquetas desplaza el texto? ─────────────────────────
-    print(f"\n{linea}\n3. ¿EL PROMPT DE ETIQUETAS OCUPA LA VENTANA?\n{linea}")
-    # Se pone una entidad inequívoca AL FINAL de un texto que llena el
-    # presupuesto. Si con 9 etiquetas desaparece y con 2 se encuentra, el prompt
-    # está desplazando el final del texto fuera de la ventana.
-    relleno = ("El informe analiza la situación con detalle y aporta datos. " * 60)
-    sonda = relleno + " El acuerdo fue firmado en Bogotá, Colombia."
-    for etiquetas in (["country"], ETIQUETAS_EN):
-        ents = extraer_entidades(modelo, [sonda], etiquetas)[0]
-        halla_final = any(e["text"].strip().rstrip(".") in ("Colombia", "Bogotá")
-                          for e in ents)
-        print(f"  {len(etiquetas)} etiqueta(s): {len(ents):3d} entidades · "
-              f"encuentra la del final: {'sí' if halla_final else '🔴 NO'}")
-    print("  (si con 9 no la encuentra y con 1 sí, hay que bajar PRESUPUESTO)")
+    # ── 3. ¿Cuánto texto cabe de verdad? ─────────────────────────────────────
+    print(f"\n{linea}\n3. PRESUPUESTO REAL: ¿DÓNDE DEJA DE TRUNCARSE?\n{linea}")
+    # Se construye una sonda del tamaño EXACTO en tokens y se pone una entidad
+    # inequívoca al final. Si el final se trunca, no se encuentra.
+    #
+    # ⚠️ La primera versión construía el relleno por repetición de una frase, sin
+    # contar: la sonda medía 669 tokens, se truncaba a 384 en TODOS los casos y la
+    # prueba daba 0 entidades siempre. No medía nada.
+    cola = " El acuerdo fue firmado en Bogotá, Colombia."
+    frase = "El informe analiza la situación con detalle y aporta datos. "
+    for presupuesto in (384, 320, 288, 256, 224):
+        objetivo = presupuesto - contar(cola)
+        relleno = ""
+        while contar(relleno + frase) <= objetivo:
+            relleno += frase
+        sonda = relleno + cola
+        for nombre, etiquetas in (("1 etiq.", ["country"]),
+                                  ("9 etiq.", ETIQUETAS_EN)):
+            ents, trunc = extraer_entidades(modelo, [sonda], etiquetas)
+            halla = any(e["text"].strip().rstrip(".") in ("Colombia", "Bogotá")
+                        for e in ents[0])
+            print(f"  presupuesto {presupuesto:3d} · {nombre}: "
+                  f"{contar(sonda):3d} tokens medidos · "
+                  f"truncado {'SÍ' if trunc else 'no':2s} · "
+                  f"halla el final {'sí' if halla else '🔴 NO'}")
+    print("\n  El presupuesto bueno es el mayor donde 'truncado' sea 'no' con las")
+    print("  9 etiquetas: por encima, el final de cada unidad no se escanea.")
 
     # ── 4. Troceado y rendimiento ────────────────────────────────────────────
     print(f"\n{linea}\n4. RENDIMIENTO\n{linea}")
@@ -303,7 +391,7 @@ if __name__ == "__main__":
     textos = [u["texto"] for u in unidades]
     for nombre, etiquetas in (("EN", ETIQUETAS_EN), ("ES", ETIQUETAS_ES)):
         t0 = time.perf_counter()
-        ents = extraer_entidades(modelo, textos, etiquetas)
+        ents, truncados = extraer_entidades(modelo, textos, etiquetas)
         seg = time.perf_counter() - t0
         ritmo = len(textos) / seg if seg else 0
         total = sum(len(e) for e in ents)
@@ -312,6 +400,8 @@ if __name__ == "__main__":
         print(f"\n  etiquetas {nombre}: {ritmo:5.1f} unidades/s → "
               f"**{horas:4.1f} h** para 118.788")
         print(f"    entidades: {total} ({total/len(textos):.1f} por unidad)")
+        print(f"    truncadas: {truncados} de {len(textos)} "
+              f"{'🔴 bajar PRESUPUESTO' if truncados else '✔'}")
         print(f"    por tipo : {_resumen_tipos(ents)}")
         if nombre == "EN":
             ents_en = ents
@@ -319,7 +409,7 @@ if __name__ == "__main__":
     # ── 5. Umbral ────────────────────────────────────────────────────────────
     print(f"\n{linea}\n5. UMBRAL DE CONFIANZA\n{linea}")
     for u in (0.3, 0.5, 0.7):
-        e = extraer_entidades(modelo, textos[:60], ETIQUETAS_EN, umbral=u)
+        e, _ = extraer_entidades(modelo, textos[:60], ETIQUETAS_EN, umbral=u)
         total = sum(len(x) for x in e)
         print(f"  umbral {u}: {total:4d} entidades en 60 unidades "
               f"({total/60:.1f} por unidad)")
@@ -331,8 +421,8 @@ if __name__ == "__main__":
     print("Cierra con medición la regla que hoy es solo estructural (§18).")
     biblio = muestra_de_unidades(40, contar, solo_biblio=True)
     if biblio:
-        e_bib = extraer_entidades(modelo, [u["texto"] for u in biblio],
-                                  ETIQUETAS_EN)
+        e_bib, _ = extraer_entidades(modelo, [u["texto"] for u in biblio],
+                                     ETIQUETAS_EN)
         print(f"  {len(biblio)} unidades bibliográficas → "
               f"{sum(len(x) for x in e_bib)} entidades")
         print(f"  por tipo : {_resumen_tipos(e_bib)}")
