@@ -1,6 +1,8 @@
 """Generador de `resultados.jsonl` — entregable 4 de §1.4.
 
+    pip install -r requirements.txt     # 9 paquetes; NO hace falta Tesseract
     python generador.py                 # la corrida real (necesita el encoder)
+    python generador.py --comprobar     # ¿reproduce la salida ya escrita? (§1.4)
     python generador.py --simulado      # prueba de formato SIN el modelo
     python generador.py --consultas otro.pdf --salida otro.jsonl
 
@@ -48,9 +50,12 @@ consultas en CPU son unos 8 minutos; en GPU, segundos.
 """
 
 import argparse
+import hashlib
 import json
+import platform
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 # El script vive en `entrega/`, fuera de `src/`, así que hay que decirle a
@@ -62,11 +67,242 @@ sys.path.insert(0, str(RAIZ / "src"))
 
 from retrieval.consultas import (CONSULTAS, cargar_consultas,  # noqa: E402
                                  fenomeno_de_consulta)
+from retrieval.fragmentos import LIMITE_PALABRAS  # noqa: E402
 from retrieval.search import (BONIFICACION_FENOMENO, FACTOR_IDIOMA_OTROS,  # noqa: E402
-                              INDICE, MAX_POR_DOCUMENTO, METADATA,
-                              N_DOCUMENTOS, N_FRAGMENTOS, Buscador)
+                              INDICE, K_CANDIDATOS, MAX_POR_DOCUMENTO,
+                              METADATA, N_DOCUMENTOS, N_FRAGMENTOS, Buscador)
 
 SALIDA = RAIZ / "entrega" / "resultados.jsonl"
+
+# El manifiesto va junto a la salida, con extensión `.json` y NO `.jsonl`, a
+# propósito: si un script de evaluación busca `*.jsonl` en esta carpeta, no debe
+# recogerlo por error.
+MANIFIESTO = SALIDA.with_name("resultados.manifest.json")
+
+
+# ── Trazabilidad de la corrida (§1.4) ────────────────────────────────────────
+#
+# 🔴 POR QUÉ EXISTE ESTO. Durante dos días el `resultados.jsonl` entregado se
+# había generado con bonificación **1.0** mientras el código decía **1.03**. Los
+# dos archivos eran válidos, las seis pruebas del validador pasaban, y aun así
+# la entrega estaba **excluida** por §1.4, porque `generador.py` no reproducía
+# esa salida. Nada en el repositorio lo delataba: la configuración con la que se
+# produjo un `resultados.jsonl` no quedaba escrita en ninguna parte.
+#
+# El manifiesto cierra ese agujero. Registra la configuración, las versiones y
+# los hashes, y `--comprobar` los contrasta contra el código actual sin
+# necesidad del modelo. Es la diferencia entre descubrir el desajuste en un
+# segundo y descubrirlo cuando ya no se puede corregir.
+
+def sha256_de(ruta: Path, trozo: int = 1 << 20) -> str:
+    """SHA-256 de un archivo, leído por trozos de 1 MiB.
+
+    Por trozos y no de golpe porque `index.faiss` son 373 MB: cargarlo entero en
+    memoria para hashearlo no aporta nada y duplica el pico de RAM.
+    """
+    h = hashlib.sha256()
+    with open(ruta, "rb") as f:
+        for bloque in iter(lambda: f.read(trozo), b""):
+            h.update(bloque)
+    return h.hexdigest()
+
+
+def contar_lineas(ruta: Path) -> int:
+    """Líneas no vacías. Se cuenta en binario: es más rápido y no decodifica."""
+    with open(ruta, "rb") as f:
+        return sum(1 for linea in f if linea.strip())
+
+
+def _version(paquete: str) -> str:
+    """Versión instalada de un paquete, o `"?"` si no se puede averiguar."""
+    from importlib.metadata import PackageNotFoundError, version
+    try:
+        return version(paquete)
+    except PackageNotFoundError:
+        return "?"
+
+
+def configuracion_actual(args) -> dict:
+    """Los parámetros que determinan la salida, tal como los usa esta corrida.
+
+    Son **solo** los que cambian el `resultados.jsonl`. Cosas como la ruta de
+    salida o el nivel de verbosidad no van aquí: harían que `--comprobar`
+    reportara un desajuste donde no hay ninguno.
+    """
+    return {
+        "bonificacion_fenomeno": args.bonificacion,
+        "factor_idioma": args.factor_idioma,
+        "max_por_documento": args.max_por_documento,
+        "k_candidatos": K_CANDIDATOS,
+        "n_documentos": N_DOCUMENTOS,
+        "n_fragmentos": N_FRAGMENTOS,
+        "limite_palabras": LIMITE_PALABRAS,
+    }
+
+
+def escribir_manifiesto(args, ntotal: int, escritas: int, simulado: bool,
+                        segundos: float) -> dict:
+    """Escribe el manifiesto junto a la salida y lo devuelve."""
+    from embedding.encoder import MODELO, REVISION
+
+    manifiesto = {
+        "generado": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "simulado": simulado,
+        "segundos": round(segundos, 1),
+        "entorno": {
+            "python": platform.python_version(),
+            "plataforma": platform.platform(),
+            "faiss-cpu": _version("faiss-cpu"),
+            "sentence-transformers": _version("sentence-transformers"),
+            "torch": _version("torch"),
+            "transformers": _version("transformers"),
+            "numpy": _version("numpy"),
+            "pypdf": _version("pypdf"),
+        },
+        "encoder": {"modelo": MODELO, "revision": REVISION},
+        "configuracion": configuracion_actual(args),
+        "consultas": {"archivo": args.consultas.name, "n": escritas},
+        "indice": {
+            "archivo": str(args.indice.relative_to(RAIZ)),
+            "bytes": args.indice.stat().st_size,
+            "vectores": ntotal,
+            "sha256": sha256_de(args.indice),
+        },
+        "metadata": {
+            "archivo": str(args.metadata.relative_to(RAIZ)),
+            "bytes": args.metadata.stat().st_size,
+            "lineas": contar_lineas(args.metadata),
+        },
+        "salida": {
+            "archivo": args.salida.name,
+            "bytes": args.salida.stat().st_size,
+            "lineas": escritas,
+            "sha256": sha256_de(args.salida),
+        },
+    }
+    destino = args.salida.with_name(args.salida.stem + ".manifest.json")
+    destino.write_text(json.dumps(manifiesto, ensure_ascii=False, indent=2) + "\n",
+                       encoding="utf-8")
+    print(f"manifiesto: {destino.name}")
+    return manifiesto
+
+
+def comprobar(args) -> int:
+    """Contrasta un `resultados.jsonl` ya escrito con el código actual.
+
+    **No necesita el modelo ni regenerar nada**, así que corre en segundos en
+    cualquier máquina. Es la comprobación que hay que hacer antes de entregar.
+
+    Devuelve 0 si todo cuadra y 1 si algo no, para poder encadenarlo.
+    """
+    problemas: list = []
+    avisos: list = []
+
+    if not args.salida.is_file():
+        print(f"✘ no existe {args.salida}")
+        return 1
+
+    lineas = contar_lineas(args.salida)
+    sha = sha256_de(args.salida)
+    print(f"salida     : {args.salida.name}")
+    print(f"  líneas   : {lineas}")
+    print(f"  bytes    : {args.salida.stat().st_size:,}")
+    print(f"  sha256   : {sha}")
+
+    # §9.3 exige exactamente 50 líneas, una por consulta.
+    if lineas != 50:
+        problemas.append(f"§9.3 exige 50 líneas y hay {lineas}")
+
+    manifiesto_ruta = args.salida.with_name(args.salida.stem + ".manifest.json")
+    if not manifiesto_ruta.is_file():
+        print(f"\n⚠️  no hay manifiesto ({manifiesto_ruta.name}).")
+        print("    Sin él no se puede saber con qué configuración se generó esta")
+        print("    salida, que es exactamente el fallo que §1.4 castiga. Vuelve a")
+        print("    correr `python generador.py` para que se escriba.")
+        return 1
+
+    m = json.loads(manifiesto_ruta.read_text(encoding="utf-8"))
+    print(f"\nmanifiesto : {manifiesto_ruta.name}  ({m['generado']})")
+
+    if m.get("simulado"):
+        problemas.append("el manifiesto dice que esta salida es SIMULADA: sus "
+                         "resultados no responden a las consultas")
+
+    # 1. El hash: ¿es este el archivo que produjo aquella corrida?
+    if m["salida"]["sha256"] != sha:
+        problemas.append(
+            "el sha256 de la salida NO coincide con el del manifiesto: el "
+            "archivo se modificó o se regeneró con otra configuración")
+    else:
+        print("  ✔ el sha256 coincide con el del manifiesto")
+
+    # 2. La configuración: ESTE es el chequeo que faltaba.
+    actual = configuracion_actual(args)
+    guardada = m["configuracion"]
+    diferencias = {k: (guardada.get(k), v) for k, v in actual.items()
+                   if guardada.get(k) != v}
+    if diferencias:
+        problemas.append("la configuración del código NO es la que produjo esta "
+                         "salida, así que `generador.py` no la reproduce (§1.4):")
+        for k, (antes, ahora) in diferencias.items():
+            problemas.append(f"      {k}: manifiesto={antes}  código={ahora}")
+    else:
+        print("  ✔ la configuración del código reproduce esta salida")
+        for k, v in actual.items():
+            print(f"      {k} = {v}")
+
+    # 3. El encoder: la revisión es el riesgo silencioso de §1.4.
+    from embedding.encoder import MODELO, REVISION
+    if m["encoder"]["modelo"] != MODELO or m["encoder"]["revision"] != REVISION:
+        problemas.append(
+            f"el encoder cambió: manifiesto={m['encoder']['modelo']}@"
+            f"{m['encoder']['revision'][:8]} código={MODELO}@{REVISION[:8]}. "
+            f"Los vectores de la consulta no vivirían en el espacio del índice")
+    else:
+        print(f"  ✔ encoder {MODELO} revisión {REVISION[:8]}…")
+
+    # 4. El índice: si es otro, el ranking es otro.
+    if args.indice.is_file():
+        bytes_ahora = args.indice.stat().st_size
+        if bytes_ahora != m["indice"]["bytes"]:
+            problemas.append(
+                f"el índice cambió de tamaño: manifiesto="
+                f"{m['indice']['bytes']:,} B, ahora={bytes_ahora:,} B")
+        elif args.hash_indice:
+            if sha256_de(args.indice) != m["indice"]["sha256"]:
+                problemas.append("el índice tiene el mismo tamaño pero otro "
+                                 "sha256: no es el que produjo esta salida")
+            else:
+                print(f"  ✔ index.faiss idéntico ({bytes_ahora:,} B)")
+        else:
+            print(f"  ✔ index.faiss del tamaño esperado ({bytes_ahora:,} B)"
+                  f"  [--hash-indice para comprobar el sha256]")
+    else:
+        avisos.append(f"no está el índice en {args.indice}, no se pudo comparar")
+
+    # 5. Las versiones que determinan los valores numéricos.
+    for paquete in ("faiss-cpu", "sentence-transformers", "torch", "transformers",
+                    "numpy"):
+        antes = m["entorno"].get(paquete)
+        ahora = _version(paquete)
+        if antes and antes != "?" and ahora != "?" and antes != ahora:
+            avisos.append(f"{paquete}: se generó con {antes} y aquí hay {ahora}")
+
+    linea = "─" * 74
+    print(f"\n{linea}")
+    for a in avisos:
+        print(f"⚠️  {a}")
+    if problemas:
+        for p in problemas:
+            print(f"✘ {p}")
+        print(f"{linea}\nVEREDICTO: ✘ esta salida NO es reproducible con el código actual")
+        print("Si el código es el correcto, regenera la salida. Si la salida es la")
+        print("correcta, ajusta el código a la configuración del manifiesto.")
+        return 1
+    print(f"{linea}\nVEREDICTO: ✔ `generador.py` reproduce esta salida (§1.4)")
+    print("Falta lo que esto NO puede comprobar: que el contenido sea bueno. Eso")
+    print("solo lo mide el ground truth, que no es público (§10.1).")
+    return 0
 
 
 def generar(consultas, buscador, modelo=None, max_por_documento=MAX_POR_DOCUMENTO,
@@ -125,7 +361,19 @@ def main() -> int:
                              "tools/barrer_factor_idioma.py, no a ojo")
     parser.add_argument("--simulado", action="store_true",
                         help="NO codifica: prueba de formato sin el modelo")
+    parser.add_argument("--comprobar", action="store_true",
+                        help="NO genera nada: contrasta el resultados.jsonl que "
+                             "ya existe con el código actual (§1.4). Segundos, y "
+                             "sin necesitar el modelo")
+    parser.add_argument("--hash-indice", action="store_true",
+                        help="con --comprobar, calcula además el sha256 de "
+                             "index.faiss (373 MB, unos segundos)")
     args = parser.parse_args()
+
+    # `--comprobar` no genera nada, así que se atiende antes de cargar el índice
+    # de 373 MB y muchísimo antes de pensar en el modelo.
+    if args.comprobar:
+        return comprobar(args)
 
     if args.simulado and args.salida == SALIDA:
         # Que una prueba no pise el entregable de verdad.
@@ -179,12 +427,21 @@ def main() -> int:
                 print(f"  {escritas}/{len(consultas)}", flush=True)
 
     temporal.replace(args.salida)
+    ntotal = buscador.indice.ntotal
     buscador.cerrar()
 
     segundos = time.perf_counter() - inicio
     print(f"\nescritas {escritas} líneas en {args.salida}")
     print(f"tiempo   : {segundos:,.1f} s")
-    print("\nSiguiente: `py -m tools.verificar_resultados` desde src/")
+
+    # El manifiesto se escribe SIEMPRE, incluido en modo simulado —ahí queda
+    # marcado como tal—, porque una salida sin registro de cómo se produjo es
+    # justo el estado que dejó la entrega excluida durante dos días.
+    escribir_manifiesto(args, ntotal, escritas, args.simulado, segundos)
+
+    print("\nSiguiente:")
+    print("  python generador.py --comprobar        # reproducibilidad (§1.4)")
+    print("  py -m tools.verificar_resultados       # esquema (§9.3.1), desde src/")
     return 0
 
 

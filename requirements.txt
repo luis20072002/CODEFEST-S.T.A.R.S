@@ -1,59 +1,109 @@
 # CODEFEST AD ASTRA 2026 · Etapa 1 — Equipo S.T.A.R.S
-# Python 3.13.14 · generado con `pip freeze` el 2026-08-03 (UTF-8 sin BOM)
+# Dependencias para CONSTRUIR la base vectorial desde el corpus.
+# Python 3.13.0 · UTF-8 sin BOM · revisado a mano el 2026-08-08
 #
-# ⚠️ DEPENDENCIA DE SISTEMA — pip NO la instala y `pip freeze` NO la captura:
+# ═════════════════════════════════════════════════════════════════════════════
+# ⚠️ SI SOLO QUIERES REPRODUCIR `resultados.jsonl`, USA EL OTRO ARCHIVO
 #
-#   Tesseract OCR 5.4.0 + los idiomas spa, eng y por.
-#   `pytesseract` (más abajo) es solo un envoltorio de Python: sin el ejecutable
-#   de Tesseract instalado en el sistema, `ocr_loader.py` falla.
+#     pip install -r entrega/requirements.txt      ← 9 paquetes
+#     python entrega/generador.py
+#
+# Ese es el que importa para §1.4, que evalúa que `generador.py` reproduzca la
+# salida **a partir del índice ya construido**. Este archivo es el de la máquina
+# que construye el índice, y trae dependencias pesadas (OCR, PDF, tabulares) que
+# el jurado no necesita y que solo añaden formas de que la instalación falle.
+#
+# ═════════════════════════════════════════════════════════════════════════════
+# ⚠️ ESTE ARCHIVO NO SE GENERA CON `pip freeze`, Y NO DEBE GENERARSE ASÍ
+#
+# Comprobado el 2026-08-08: el venv tiene ~120 paquetes y **17 no tienen nada
+# que ver con el pipeline** (docling, rapidocr, opencv-python, tree-sitter,
+# Faker, python-docx, python-pptx, semchunk, mail-parser…), instalados al
+# evaluar alternativas que se descartaron. Un `pip freeze` los declararía todos.
+#
+# La lista de abajo son los 14 imports de terceros que existen de verdad en
+# `src/`, obtenidos recorriendo los `import` de todos los .py del proyecto, más
+# las transitivas que fijan los valores numéricos. Si añades un import nuevo,
+# añádelo aquí a mano.
+#
+# ═════════════════════════════════════════════════════════════════════════════
+# ⚠️ DEPENDENCIA DE SISTEMA — pip NO la instala y `pip freeze` NO la captura
+#
+#   Tesseract OCR 5.4.0 + los idiomas spa y eng (`OCR_LANG = "spa+eng"`).
+#   `pytesseract` es solo un envoltorio: sin el ejecutable, `ocr_loader.py` falla.
 #
 #   Windows:
 #     winget install --id UB-Mannheim.TesseractOCR -e
-#     # el instalador solo trae eng + osd; spa y por se descargan aparte:
-#     #   https://github.com/tesseract-ocr/tessdata_fast → spa.traineddata, por.traineddata
-#     # y se copian a C:\Program Files\Tesseract-OCR\tessdata\ (requiere admin)
+#     # el instalador solo trae eng + osd; spa se descarga aparte de
+#     #   https://github.com/tesseract-ocr/tessdata_fast → spa.traineddata
+#     # y se copia a C:\Program Files\Tesseract-OCR\tessdata\ (requiere admin)
 #     # añadir C:\Program Files\Tesseract-OCR al PATH
 #   Debian/Ubuntu:
-#     sudo apt install tesseract-ocr tesseract-ocr-spa tesseract-ocr-eng tesseract-ocr-por
+#     sudo apt install tesseract-ocr tesseract-ocr-spa tesseract-ocr-eng
 #
-#   Verificación: `tesseract --list-langs` incluye eng, spa y por.
+#   Verificación: `tesseract --list-langs` incluye eng y spa.
 #
-# NO añadir `pathlib` a este archivo: el paquete `pathlib` de PyPI es un backport
-# viejo que puede sombrear el `pathlib` de la librería estándar. Estaba aquí por
-# error y se quitó el 2026-08-03.
+#   ⚠️ Tesseract **NO afecta a la reproducibilidad que §1.4 evalúa**: el OCR
+#   ocurrió aguas arriba y su resultado va horneado en el índice. En la máquina
+#   del jurado no se ejecuta nunca. Detalle en `ESTADO.md` §8.
+#
+# ⚠️ NO añadir `pathlib`: el paquete de PyPI es un backport viejo que sombrea el
+# `pathlib` de la librería estándar. Estuvo aquí por error y se desinstaló.
 
-cffi==2.1.1
-charset-normalizer==3.4.9
+# ── Recuperación e índice (lo mismo que entrega/requirements.txt) ─────────────
+faiss-cpu==1.15.0
+sentence-transformers==5.7.0
+pypdf==6.15.0
+numpy==2.5.1
+torch==2.13.0
+transformers==5.14.1
+tokenizers==0.22.2
+safetensors==0.8.0
+huggingface_hub==1.26.0
+
+# ── Extracción del corpus (§2.1) — solo para reconstruir el índice ────────────
+pdfplumber==0.11.10          # PDF: abre 757/759 del corpus
+pymupdf==1.28.0              # se importa como `fitz`; rasteriza páginas para OCR
+pytesseract==0.3.13          # envoltorio de Tesseract (ver la nota de arriba)
+pillow==12.3.0               # se importa como `PIL`; normaliza a RGB antes del OCR
+openpyxl==3.1.5              # XLSX: los 4 del corpus y el Indice_Datos_Codefest
+mapbox-vector-tile==2.2.0    # PBF: los 73 mosaicos vectoriales
+
+# ── Preprocesamiento (§2.2) ──────────────────────────────────────────────────
+# 🔴 Estaba SIN DECLARAR y además desinstalado del venv (comprobado 2026-08-08):
+# `preprocess/language.py` revienta con ModuleNotFoundError sin esto. Es el
+# detector de idioma, estadístico y determinista — no un modelo generativo, así
+# que no roza §8.3. Llamarlo con `datatype="uint32"` (ver `ESTADO.md` §6).
+py3langid==0.3.0
+
+# ── Transitivas de pdfplumber que conviene fijar ─────────────────────────────
+pdfminer.six==20260107
+pypdfium2==5.12.1
 cryptography==50.0.0
-et_xmlfile==2.0.0
-faiss-cpu==1.14.3
-filelock==3.32.2
+cffi==2.1.0
+pycparser==3.0
+charset-normalizer==3.4.9
+
+# ── Transitivas de mapbox-vector-tile ────────────────────────────────────────
+protobuf==6.33.6
+shapely==2.1.2
+pyclipper==1.4.0
+
+# ── Otras transitivas fijadas ───────────────────────────────────────────────
+et_xmlfile==2.0.0            # de openpyxl
+filelock==3.32.2             # de torch / huggingface_hub
 fsspec==2026.7.0
 Jinja2==3.1.6
-mapbox-vector-tile==2.2.0
 MarkupSafe==3.0.3
-mpmath==1.3.0
 networkx==3.6.1
-numpy==2.5.1
-openpyxl==3.1.5
-packaging==26.2
-pandas==3.0.5
-pdfminer.six==20260107
-pdfplumber==0.11.10
-pillow==12.3.0
-protobuf==6.33.6
-pyclipper==1.4.0
-pycparser==3.0
-pymupdf==1.28.0
-pypdf==6.14.2
-pypdfium2==5.12.1
-pytesseract==0.3.13
-python-dateutil==2.9.0.post0
-setuptools==83.0.0
-shapely==2.1.2
-six==1.17.0
 sympy==1.14.0
-torch==2.13.0
+mpmath==1.3.0
+packaging==26.2
 typing_extensions==4.16.0
-tzdata==2026.3
-
+tqdm==4.70.0
+regex==2026.7.19
+requests==2.34.2
+scikit-learn==1.9.0          # de sentence-transformers
+scipy==1.18.0
+joblib==1.5.3
+threadpoolctl==3.6.0

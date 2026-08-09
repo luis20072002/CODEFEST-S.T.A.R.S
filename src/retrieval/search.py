@@ -117,19 +117,49 @@ IDIOMAS_PREFERIDOS = ("es", "en")
 # Factor por el que se multiplica la puntuación de un candidato cuyo `idioma`
 # no está en IDIOMAS_PREFERIDOS.
 #
-# 🔴 **1.0 = DESACTIVADO, y así se queda hasta que esté medido.** Es la
-# disciplina que el proyecto ya aprendió con la bonificación por fenómeno
-# (`ESTADO.md` §21): los factores 1,02 y 1,05 que parecían razonables sobre la
-# aritmética de los cosenos **no hacían nada**, y 1,10 era un filtro
-# disfrazado. Aquí el número se elige con `tools/barrer_factor_idioma.py`, no a
-# ojo.
+# **0.97, fijado el 2026-08-08 con `tools/barrer_factor_idioma.py`** sobre las 50
+# consultas reales. No es un valor elegido a ojo; el barrido completo está en
+# `ESTADO.md` §17. Lo esencial:
 #
-# ⚠️ **Y hay una razón de §1.4 para no tocarlo todavía**: el `resultados.jsonl`
-# entregado se generó SIN factor de idioma. Si este valor deja de ser 1.0, el
-# jurado —que corre `generador.py` sin banderas— produciría un archivo distinto
-# al entregado y la entrega **se excluye**. Cambiar este número obliga a
-# regenerar el entregable y a re-validarlo con `tools.verificar_resultados`.
-FACTOR_IDIOMA_OTROS = 1.0
+#     factor   fuera de es/en   conjuntos de docs que cambian   veredicto
+#     ×1,00    16/500 en 8 q    —                               referencia
+#     ×0,99    11/500 en 8 q    2 de 50                         casi cosmético
+#     ×0,97     5/500 en 4 q    5 de 50                          ✅ ELEGIDO
+#     ×0,95     0/500 en 0 q    5 de 50                         filtro disfrazado
+#     ×0,90     0/500           idéntico a ×0,95
+#     ×0,80     0/500           idéntico a ×0,95
+#
+# **Qué significa el número, que es el argumento de verdad:** el factor define
+# cuán cerca tiene que estar una alternativa en es/en para que la prefiramos. A
+# 0,97 la banda es del 3% de coseno, o sea **casi equivalencia semántica**: si la
+# traducción era relevante, cambiarla por su equivalente cuesta casi nada; si el
+# *ground truth* está en es/en, gana mucho. Apuesta asimétrica a favor.
+#
+# 🔴 **Por qué NO se bajó más.** De 0,95 hacia abajo no sobrevive **ni un**
+# fragmento fuera de {es, en}: es un filtro con otro nombre, y el filtro se
+# descartó porque su fallo es irreversible. Y las tres corridas de 0,95, 0,90 y
+# 0,80 producen **la misma salida exacta** (comprobado, no supuesto), así que
+# castigar más no compra nada.
+#
+# 🔴 **Por qué NO se dejó en 0,99.** F1@3 es «una métrica de conjunto (no
+# considera el orden)», textual en §10.2.2. A 0,99, `q018` y `q024` devuelven
+# **los mismos tres documentos reordenados**, y una reordenación vale **cero** a
+# nivel documento: solo cambia el conjunto en 2 de las 50 consultas. Además falla
+# el criterio de aceptación —`q022` sigue con un documento chino en el rank 1—,
+# que a 0,97 sí se cumple.
+#
+# **La puerta de escape queda abierta y se puede señalar:** a 0,97 sobreviven 5
+# fragmentos fuera de es/en en 4 consultas, y en `q007` el documento coreano sale
+# del top-3 pero **sus fragmentos siguen ocupando ranks**. El caso que mejor lo
+# ilustra es `q024`, donde el execsum portugués del 2026 se cambia por el
+# **español del mismo informe**: no se descarta el contenido, se prefiere el
+# idioma.
+#
+# ⚠️ **Este valor tiene que coincidir con el que produjo el `resultados.jsonl`
+# entregado**, igual que `BONIFICACION_FENOMENO`. El jurado corre `generador.py`
+# sin banderas; si no coincide, §1.4 excluye la entrega. Compruébalo con
+# `python generador.py --comprobar`.
+FACTOR_IDIOMA_OTROS = 0.97
 
 
 def aplicar_factor_idioma(
