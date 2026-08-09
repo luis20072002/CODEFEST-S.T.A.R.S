@@ -10,13 +10,12 @@ medición las preguntas que quedaron abiertas en `TAREAS.md`, Fase 7.
 ────────────────────────────────────────────────────────────────────────────────
 QUÉ MIDE, Y POR QUÉ CADA COSA
 
-1. **`max_len` real del modelo.** El presupuesto de la unidad se fijó en 320
-   tokens suponiendo que la ventana es 384. Si es otra, el presupuesto cambia.
-2. **El presupuesto real de texto**, barriendo 384 → 224. Medido el 2026-08-09:
-   GLiNER truncó unidades que el tokenizador contaba en 320 y él contó en **401**,
-   porque su cuenta incluye el prompt de etiquetas y sus propios marcadores. El
-   presupuesto **no se puede deducir de `max_len`**: se elige como el mayor valor
-   donde el contador de truncamientos da cero con las nueve etiquetas.
+1. **`max_len` real del modelo**, y `max_width` — que limita a 12 la longitud de
+   un span, así que un nombre de tratado muy largo no se puede detectar.
+2. **Que el troceado no trunque**, barriendo presupuestos y contando los avisos
+   de GLiNER. 🔴 La unidad del presupuesto **son palabras de GLiNER, no
+   subtokens**: ver el 🔴 de `PRESUPUESTO`, donde está la medición que lo
+   demuestra y las dos hipótesis falsas que costó descartar.
 3. **Unidades por segundo**, con el conjunto de etiquetas real y no con dos de
    juguete: el coste crece con el número de etiquetas.
 4. **Etiquetas en inglés frente a español.** El corpus es trilingüe y GLiNER es
@@ -68,24 +67,35 @@ REVISION: Optional[str] = "443d26d654e0324125a96bebd8e796c14ff2efe6"
 # barre para que se elija con datos.
 UMBRAL = 0.5
 
-# Presupuesto de texto de la unidad, en tokens.
+# 🔴 EL PRESUPUESTO SE MIDE EN PALABRAS DE GLiNER, NO EN SUBTOKENS.
 #
-# 🔴 **288, y NO 320 ni 384.** El razonamiento de que con `max_len = 384` cabían
-# 320 de texto más ~64 de prompt **era falso**, y lo desmintió la medición:
+# Esto costó tres mediciones y dos hipótesis falsas, y el hallazgo es el que hace
+# que el troceado funcione:
 #
-#   · GLiNER truncó **7 de 300** unidades construidas con presupuesto 320,
-#     avisando «Sentence of length 401 has been truncated to 384»;
-#   · esas 7 son exactamente las que tienen **más de 310 tokens** de texto, así
-#     que el sobrecoste real de GLiNER es **74 tokens**, no 64;
-#   · y de esos 74, solo ~32 son las etiquetas contadas a mano. Los ~42 restantes
-#     son marcadores internos del modelo, que **no se pueden deducir** — de ahí
-#     que el presupuesto haya que medirlo y no calcularlo.
+#   1. Con presupuesto de 320 **subtokens**, GLiNER truncó 7 de 300 unidades
+#      («Sentence of length 401 has been truncated to 384»).
+#   2. Primera hipótesis: el prompt de etiquetas costaba 74 tokens, luego había
+#      que bajar a 288. **Falsa** — a 288 se truncaban las mismas 7. El «7 = 7»
+#      que la sostenía era una coincidencia de recuentos, no una causa.
+#   3. Segunda hipótesis, medida y **confirmada con ajuste exacto**: `max_len`
+#      cuenta las **palabras del troceador de GLiNER**, que separa cada signo de
+#      puntuación como token propio. Las 7 truncadas son exactamente las que
+#      pasan de 384 palabras.
 #
-# Con 288 el texto más largo que produce la cascada mide 286 tokens: 286 + 74 =
-# 360, con 24 de margen para que las etiquetas en español cuesten 4 más que en
-# inglés. El coste es pasar de ~1,4 h a ~1,6 h de GPU: **doce minutos a cambio de
-# que ninguna unidad se escanee a medias en silencio.**
-PRESUPUESTO = 288
+# La razón palabras/subtokens tiene mediana 0,68 pero **máximo 6,61**:
+# `F1-CSET-043#0000` mide 279 subtokens y **1.782 palabras**, porque es un índice
+# con puntos guía y cada punto cuenta. Por eso bajar el presupuesto de subtokens
+# no arreglaba nada: el problema no es la longitud, es la densidad de puntuación.
+#
+# Con el presupuesto en palabras, el truncamiento desaparece **por construcción**:
+# la cascada no deja pasar ninguna unidad por encima del tope, y 320 + ~27 del
+# prompt = 347, con 37 de margen sobre 384.
+PRESUPUESTO = 320
+
+# El troceador de GLiNER: palabras, o cualquier carácter no blanco suelto. Es lo
+# que hace que «U.S.-based» o una fila de puntos guía cuenten mucho más de lo que
+# su longitud en subtokens sugiere.
+_PALABRAS_GLINER = re.compile(r"\w+(?:[-_]\w+)*|\S")
 
 # Los tipos que se le piden a GLiNER, anclados en los cinco de §7.1 más los dos
 # que los fenómenos del reto exigen. Las dos versiones se comparan en el banco.
@@ -142,13 +152,28 @@ def sha_del_modelo(nombre: str = MODELO) -> str:
 
 # ── Troceado en unidades ─────────────────────────────────────────────────────
 
-def contador_de_tokens(modelo=None):
-    """Devuelve la función que cuenta tokens con el tokenizador de GLiNER.
+def contador_de_palabras():
+    """El contador que debe usarse para trocear: **palabras de GLiNER**.
 
-    Si se pasa el modelo, usa su propio tokenizador —lo correcto—. Si no, baja el
-    de mDeBERTa aparte, que es el backbone: son unos MB frente a los ~1,2 GB del
-    modelo, y permite trocear en una máquina sin GPU. Es el mismo truco que
-    `embedding.encoder.cargar_tokenizador()`.
+    Es la unidad en la que el modelo mide `max_len`, así que es la única con la
+    que el presupuesto garantiza que no haya truncamiento. No necesita descargar
+    nada — es una expresión regular— así que el troceado corre en cualquier
+    máquina, sin modelo y sin GPU.
+
+    ⚠️ **No usar el contador de subtokens para trocear.** Ver el 🔴 de
+    `PRESUPUESTO`: con subtokens el truncamiento persiste porque la relación entre
+    las dos unidades varía de 0,68 a 6,61 según la densidad de puntuación.
+    """
+    return lambda t: len(_PALABRAS_GLINER.findall(t))
+
+
+def contador_de_subtokens(modelo=None):
+    """Cuenta subtokens del tokenizador. **Solo para diagnóstico.**
+
+    Sirve para comparar las dos contabilidades y explicar por qué divergen, no
+    para trocear. Si se pasa el modelo usa su propio tokenizador; si no, baja el
+    de mDeBERTa aparte —unos MB frente a los ~1,2 GB del modelo—, que es el mismo
+    truco que `embedding.encoder.cargar_tokenizador()`.
     """
     if modelo is not None:
         tk = modelo.data_processor.transformer_tokenizer
@@ -353,7 +378,10 @@ if __name__ == "__main__":
         raise SystemExit(1)
 
     modelo = cargar_modelo()
-    contar = contador_de_tokens(modelo)
+    # Se trocea con PALABRAS de GLiNER, que es la unidad de `max_len`. El
+    # contador de subtokens se usa solo para informar de la divergencia.
+    contar = contador_de_palabras()
+    contar_sub = contador_de_subtokens(modelo)
 
     # ── 2. La ventana real ───────────────────────────────────────────────────
     print(f"\n{linea}\n2. VENTANA DEL MODELO\n{linea}")
@@ -385,8 +413,12 @@ if __name__ == "__main__":
     # único fiable es trocear unidades de verdad con cada presupuesto y contar
     # cuántas avisa GLiNER de haber truncado.
     print("presup.  unidades  truncadas   veredicto")
-    for presupuesto in (384, 320, 288, 256, 224):
-        muestra = muestra_de_unidades(80, contar, presupuesto=presupuesto)
+    for presupuesto in (384, 352, 320, 288, 256):
+        # ⚠️ 300 y no 80. Con 80 este barrido daba «0 truncadas» en TODOS los
+        # presupuestos mientras el bloque 4, con 300, contaba 7: las unidades
+        # largas están en la cola de la muestra. Es la tercera vez que esta
+        # prueba mide de menos por estar mal dimensionada.
+        muestra = muestra_de_unidades(300, contar, presupuesto=presupuesto)
         _, trunc = extraer_entidades(
             modelo, [u["texto"] for u in muestra], ETIQUETAS_EN)
         pct = 100 * trunc / len(muestra) if muestra else 0
