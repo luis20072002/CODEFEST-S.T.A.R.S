@@ -99,7 +99,12 @@ RELACIONES: Dict[str, Tuple[str, ...]] = {
     # queda fuera porque tras `use` no hay terminación.
     "opera":        ("oper", "emple", "utiliz", "use", "despleg", "deploy",
                      "manej"),
-    "lanza":        ("lanz", "launch", "pon en orbita", "orbit"),
+    # ⚠️ Sin `orbit`: **orbitar no es lanzar**. Estaba aquí y producía
+    # `(Indian communications satellites, lanza, Earth)` sobre «orbiting the», que
+    # describe una relación real pero con la etiqueta equivocada — el satélite
+    # orbita la Tierra, no la lanza. Pasa a `orbita`, que es su propia relación.
+    "lanza":        ("lanz", "launch", "pon en orbita"),
+    "orbita":       ("orbit", "gira alrededor", "circunda"),
     "regula":       ("regul", "govern", "rige", "establec", "norm"),
     "prohibe":      ("prohib", "ban", "veta", "forbid", "restring", "restrict"),
     # ⚠️ Sin `firm`: es **sustantivo en los dos idiomas** —«firms» en inglés es

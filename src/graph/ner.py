@@ -68,9 +68,24 @@ REVISION: Optional[str] = "443d26d654e0324125a96bebd8e796c14ff2efe6"
 # barre para que se elija con datos.
 UMBRAL = 0.5
 
-# Presupuesto de la unidad, en tokens. Medido en `ESTADO.md` §18: con 320 salen
-# ~105.285 unidades de prosa y **0 excedidas**. Se confirma contra `max_len`.
-PRESUPUESTO = 320
+# Presupuesto de texto de la unidad, en tokens.
+#
+# 🔴 **288, y NO 320 ni 384.** El razonamiento de que con `max_len = 384` cabían
+# 320 de texto más ~64 de prompt **era falso**, y lo desmintió la medición:
+#
+#   · GLiNER truncó **7 de 300** unidades construidas con presupuesto 320,
+#     avisando «Sentence of length 401 has been truncated to 384»;
+#   · esas 7 son exactamente las que tienen **más de 310 tokens** de texto, así
+#     que el sobrecoste real de GLiNER es **74 tokens**, no 64;
+#   · y de esos 74, solo ~32 son las etiquetas contadas a mano. Los ~42 restantes
+#     son marcadores internos del modelo, que **no se pueden deducir** — de ahí
+#     que el presupuesto haya que medirlo y no calcularlo.
+#
+# Con 288 el texto más largo que produce la cascada mide 286 tokens: 286 + 74 =
+# 360, con 24 de margen para que las etiquetas en español cuesten 4 más que en
+# inglés. El coste es pasar de ~1,4 h a ~1,6 h de GPU: **doce minutos a cambio de
+# que ninguna unidad se escanee a medias en silencio.**
+PRESUPUESTO = 288
 
 # Los tipos que se le piden a GLiNER, anclados en los cinco de §7.1 más los dos
 # que los fenómenos del reto exigen. Las dos versiones se comparan en el banco.
@@ -204,7 +219,8 @@ def _sorteo_estable(doc_id: str, divisor: int) -> bool:
 
 
 def muestra_de_unidades(n: int, contar_tokens, solo_biblio: bool = False,
-                        por_documento: int = 2, divisor: int = 7) -> List[dict]:
+                        por_documento: int = 2, divisor: int = 7,
+                        presupuesto: int = PRESUPUESTO) -> List[dict]:
     """Toma `n` unidades repartidas por **documentos**, de forma determinista.
 
     🔴 **El reparto es por documento y no por registro, y la diferencia importa.**
@@ -251,7 +267,8 @@ def muestra_de_unidades(n: int, contar_tokens, solo_biblio: bool = False,
         d = r["doc_id"]
         if vistos.get(d, 0) >= por_documento:
             continue
-        nuevas = unidades_de_registro(r, contar_tokens)[:por_documento]
+        nuevas = unidades_de_registro(
+            r, contar_tokens, presupuesto)[:por_documento]
         if not nuevas:
             continue
 
@@ -352,32 +369,31 @@ if __name__ == "__main__":
             print("  ⚠️ margen escaso para 9 etiquetas: bajar PRESUPUESTO")
 
     # ── 3. ¿Cuánto texto cabe de verdad? ─────────────────────────────────────
-    print(f"\n{linea}\n3. PRESUPUESTO REAL: ¿DÓNDE DEJA DE TRUNCARSE?\n{linea}")
-    # Se construye una sonda del tamaño EXACTO en tokens y se pone una entidad
-    # inequívoca al final. Si el final se trunca, no se encuentra.
+    print(f"\n{linea}\n3. PRESUPUESTO REAL: BARRIDO SOBRE UNIDADES DEL CORPUS\n{linea}")
+    # ⚠️ Dos versiones anteriores de esta prueba NO medían nada, y las dos por el
+    # mismo motivo: usaban una sonda sintética.
     #
-    # ⚠️ La primera versión construía el relleno por repetición de una frase, sin
-    # contar: la sonda medía 669 tokens, se truncaba a 384 en TODOS los casos y la
-    # prueba daba 0 entidades siempre. No medía nada.
-    cola = " El acuerdo fue firmado en Bogotá, Colombia."
-    frase = "El informe analiza la situación con detalle y aporta datos. "
+    #   · la primera construía el relleno repitiendo una frase sin contar, así que
+    #     medía 669 tokens y se truncaba en TODOS los casos → 0 entidades siempre;
+    #   · la segunda lo construía en tokens, pero el bucle paraba **por debajo**
+    #     del presupuesto, así que ninguna sonda cruzaba la frontera y todos los
+    #     presupuestos salían «truncado no», incluido 384.
+    #
+    # La lección es la de siempre en este proyecto: **medir sobre los datos
+    # reales.** GLiNER cuenta la longitud a su manera —incluye el prompt de
+    # etiquetas y sus marcadores— y esa cuenta no se puede reproducir a mano. Lo
+    # único fiable es trocear unidades de verdad con cada presupuesto y contar
+    # cuántas avisa GLiNER de haber truncado.
+    print("presup.  unidades  truncadas   veredicto")
     for presupuesto in (384, 320, 288, 256, 224):
-        objetivo = presupuesto - contar(cola)
-        relleno = ""
-        while contar(relleno + frase) <= objetivo:
-            relleno += frase
-        sonda = relleno + cola
-        for nombre, etiquetas in (("1 etiq.", ["country"]),
-                                  ("9 etiq.", ETIQUETAS_EN)):
-            ents, trunc = extraer_entidades(modelo, [sonda], etiquetas)
-            halla = any(e["text"].strip().rstrip(".") in ("Colombia", "Bogotá")
-                        for e in ents[0])
-            print(f"  presupuesto {presupuesto:3d} · {nombre}: "
-                  f"{contar(sonda):3d} tokens medidos · "
-                  f"truncado {'SÍ' if trunc else 'no':2s} · "
-                  f"halla el final {'sí' if halla else '🔴 NO'}")
-    print("\n  El presupuesto bueno es el mayor donde 'truncado' sea 'no' con las")
-    print("  9 etiquetas: por encima, el final de cada unidad no se escanea.")
+        muestra = muestra_de_unidades(80, contar, presupuesto=presupuesto)
+        _, trunc = extraer_entidades(
+            modelo, [u["texto"] for u in muestra], ETIQUETAS_EN)
+        pct = 100 * trunc / len(muestra) if muestra else 0
+        veredicto = "✔ ninguna" if trunc == 0 else f"🔴 {pct:.1f}% se trunca"
+        print(f"  {presupuesto:3d}    {len(muestra):5d}     {trunc:5d}     {veredicto}")
+    print("\n  El presupuesto bueno es el MAYOR con 0 truncadas: por encima, el")
+    print("  final de esas unidades no se escanea y sus entidades no existen.")
 
     # ── 4. Troceado y rendimiento ────────────────────────────────────────────
     print(f"\n{linea}\n4. RENDIMIENTO\n{linea}")
@@ -408,13 +424,29 @@ if __name__ == "__main__":
 
     # ── 5. Umbral ────────────────────────────────────────────────────────────
     print(f"\n{linea}\n5. UMBRAL DE CONFIANZA\n{linea}")
+    # ⚠️ El recuento por umbral **no decide nada**: más entidades no es mejor, y un
+    # grafo lleno de entidades espurias no cumple el ejemplo de §7.1. Lo que decide
+    # es mirar las **marginales** —las que un umbral admite y el siguiente
+    # rechaza—, porque son exactamente las que están en discusión. Imprimirlas
+    # convierte la elección en una revisión de diez segundos en vez de una
+    # corazonada sobre un número.
+    por_umbral = {}
     for u in (0.3, 0.5, 0.7):
         e, _ = extraer_entidades(modelo, textos[:60], ETIQUETAS_EN, umbral=u)
         total = sum(len(x) for x in e)
+        # Clave por (texto, etiqueta) para poder restar conjuntos entre umbrales.
+        por_umbral[u] = {(x["text"], x["label"]) for lista in e for x in lista}
         print(f"  umbral {u}: {total:4d} entidades en 60 unidades "
-              f"({total/60:.1f} por unidad)")
-    print("  ⚠️ más entidades no es mejor: un grafo con entidades espurias no")
-    print("     cumple el ejemplo de §7.1. Mirar las de umbral bajo a ojo.")
+              f"({total/60:.1f} por unidad · {len(por_umbral[u])} distintas)")
+
+    for bajo, alto in ((0.3, 0.5), (0.5, 0.7)):
+        marginales = sorted(por_umbral[bajo] - por_umbral[alto])
+        print(f"\n  Las que {bajo} admite y {alto} rechaza ({len(marginales)}), "
+              f"muestra de 25:")
+        for t, l in marginales[:25]:
+            print(f"      [{l:22s}] {t}")
+    print(f"\n  ¿Son entidades de verdad y del dominio? Si al bajar el umbral solo")
+    print(f"  entra ruido, el umbral alto es el bueno.")
 
     # ── 6. Los 13 documentos bibliográficos excluidos ────────────────────────
     print(f"\n{linea}\n6. ¿QUÉ RINDEN LOS 13 DOCUMENTOS EXCLUIDOS?\n{linea}")
