@@ -160,6 +160,16 @@ def escribir_manifiesto(args, ntotal: int, escritas: int, simulado: bool,
             "pypdf": _version("pypdf"),
         },
         "encoder": {"modelo": MODELO, "revision": REVISION},
+        # De dónde salió el vector de la consulta. NO va dentro de
+        # `configuracion` a propósito: no altera la salida —el vector es el
+        # mismo— así que `--comprobar` no debe reportar un desajuste cuando el
+        # jurado codifique las consultas y nosotros las hayamos leído del cache.
+        # Se registra aparte porque es información de trazabilidad honesta:
+        # dice si el modelo se cargó de verdad en esta corrida.
+        "vectores_consulta": ("precodificados: " + args.vectores.name
+                              if args.vectores is not None
+                              else "simulados (vectores del índice)" if simulado
+                              else "codificados con el modelo"),
         "configuracion": configuracion_actual(args),
         "consultas": {"archivo": args.consultas.name, "n": escritas},
         "indice": {
@@ -307,13 +317,42 @@ def comprobar(args) -> int:
 
 def generar(consultas, buscador, modelo=None, max_por_documento=MAX_POR_DOCUMENTO,
             bonificacion=BONIFICACION_FENOMENO,
-            factor_idioma=FACTOR_IDIOMA_OTROS):
+            factor_idioma=FACTOR_IDIOMA_OTROS, vectores=None):
     """Produce un objeto de resultado por consulta, en orden.
 
-    Con `modelo=None` funciona en **modo simulado**: en vez de codificar la
-    consulta usa un vector del propio índice. No sirve para evaluar nada —los
-    resultados no tienen relación con la consulta— pero permite comprobar que
-    el formato de salida cumple §9.3.1 sin descargar 4,35 GB.
+    Tres formas de obtener el vector de la consulta, en orden de preferencia:
+
+    1. **`modelo`** — se codifica la consulta. Es el camino normal y el que
+       ejecuta quien reproduce la entrega.
+    2. **`vectores`** — matriz `(n_consultas × dim)` ya codificada con el MISMO
+       modelo y la MISMA revisión. Permite regenerar la salida en una máquina sin
+       los 4,35 GB del modelo: 200 KB de vectores en lugar de 4,35 GB de pesos.
+       La procedencia se comprueba antes de usarla —modelo, revisión, ids de las
+       consultas y normas— porque mezclar dos espacios vectoriales no daría
+       ningún error y produciría un ranking sin sentido.
+
+       🔴 **NO produce una salida idéntica a la del camino 1, y este docstring
+       afirmaba lo contrario.** Medido el 2026-08-08 contra la salida generada
+       con el modelo: **4 de 50 consultas difieren** (`q020`, `q023`, `q024`,
+       `q028`), y en las dos que cambian a nivel documento el **conjunto es el
+       mismo** — solo cambia el orden, que §10.2.2 no considera para F1@3.
+
+       La causa está medida: esas cuatro consultas tienen **empates prácticos**
+       en su top-12, con márgenes de 0,00, 6,1e-08, 2,5e-07 y 4,2e-06. Es ruido
+       de float32 por el relleno de los lotes: `sentence-transformers` agrupa por
+       longitud, así que codificar una consulta sola no da exactamente el mismo
+       vector que codificarla dentro de un lote de 50 (`ESTADO.md` §14 lo midió
+       en los embeddings del corpus). El desempate por `chunk_id` **no cubre
+       esto**: solo actúa sobre empates exactos, y un margen de 1e-08 no es un
+       empate exacto.
+
+       ⚠️ **Consecuencia práctica: el `resultados.jsonl` que se entrega debe
+       generarse por el camino 1**, que es el que ejecutará quien reproduzca la
+       entrega. Este camino sirve para experimentar y comparar configuraciones,
+       no para producir el entregable.
+    3. **Ninguno de los dos** — modo simulado: se usa un vector del propio
+       índice. No sirve para evaluar nada —los resultados no tienen relación con
+       la consulta— pero permite comprobar que el formato cumple §9.3.1.
 
     `bonificacion > 1.0` empuja hacia el fenómeno de la consulta. El fenómeno
     sale de `fenomeno_de_consulta()`, que es una correspondencia **verificada a
@@ -332,6 +371,10 @@ def generar(consultas, buscador, modelo=None, max_por_documento=MAX_POR_DOCUMENT
                      factor_idioma=factor_idioma)
         if modelo is not None:
             resultado = buscador.buscar_texto(texto, modelo, **comun)
+        elif vectores is not None:
+            # La fila `posicion` corresponde a la consulta `posicion`: el orden
+            # se verificó contra la lista de ids del cache antes de llegar aquí.
+            resultado = buscador.buscar(vectores[posicion], consulta=texto, **comun)
         else:
             # Vector del índice, repartido para que no salgan los mismos
             # siempre. Determinista: no se usa azar.
@@ -339,6 +382,53 @@ def generar(consultas, buscador, modelo=None, max_por_documento=MAX_POR_DOCUMENT
             vector = np.asarray(buscador.indice.reconstruct(int(indice)))
             resultado = buscador.buscar(vector, consulta=texto, **comun)
         yield resultado
+
+
+def cargar_vectores_consulta(ruta: Path, consultas) -> "object":
+    """Lee vectores de consulta ya codificados, verificando su procedencia.
+
+    Las tres comprobaciones existen porque las tres pueden producir un ranking
+    silenciosamente incorrecto: otro modelo, otra revisión del mismo modelo, u
+    otro conjunto de consultas en otro orden.
+    """
+    import numpy as np
+
+    from embedding.encoder import MODELO, REVISION
+
+    matriz = np.load(ruta)
+    lateral = ruta.with_suffix(".json")
+    if not lateral.is_file():
+        raise SystemExit(f"falta {lateral.name}, que lleva la procedencia de los "
+                         f"vectores. Sin él no se puede comprobar con qué modelo "
+                         f"se codificaron, y usarlos a ciegas puede producir un "
+                         f"ranking sin sentido sin dar ningún error.")
+    meta = json.loads(lateral.read_text(encoding="utf-8"))
+
+    if meta.get("modelo") != MODELO or meta.get("revision") != REVISION:
+        raise SystemExit(
+            f"los vectores son de {meta.get('modelo')}@"
+            f"{str(meta.get('revision'))[:8]}… y el código pide {MODELO}@"
+            f"{REVISION[:8]}…. Mezclar dos espacios vectoriales no da ningún "
+            f"error y produce un ranking sin sentido.")
+    ids_cache = meta.get("consultas")
+    ids_ahora = [qid for qid, _ in consultas]
+    if ids_cache != ids_ahora:
+        raise SystemExit("los vectores no corresponden a estas consultas, o no "
+                         "están en el mismo orden.")
+    if len(matriz) != len(consultas):
+        raise SystemExit(f"{len(matriz)} vectores para {len(consultas)} consultas.")
+
+    # La norma es condición para que el producto interno de `IndexFlatIP` sea el
+    # coseno (§5.2). Si no lo fuera, las puntuaciones no serían comparables.
+    normas = np.linalg.norm(matriz, axis=1)
+    if abs(normas.min() - 1.0) > 1e-4 or abs(normas.max() - 1.0) > 1e-4:
+        raise SystemExit(f"los vectores no están normalizados "
+                         f"(normas {normas.min():.6f}–{normas.max():.6f}); §5.2 "
+                         f"lo exige para que el producto interno sea el coseno.")
+
+    print(f"vectores  : {ruta.name}  {matriz.shape}  ✔ {MODELO} rev {REVISION[:8]}…")
+    print(f"            normas 1,000000 · NO se carga el modelo (4,35 GB)")
+    return matriz
 
 
 def main() -> int:
@@ -359,6 +449,10 @@ def main() -> int:
                         help="factor <1.0 que penaliza los fragmentos fuera de "
                              "es/en (1.0 = desactivado). Elegirlo con "
                              "tools/barrer_factor_idioma.py, no a ojo")
+    parser.add_argument("--vectores", type=Path, default=None,
+                        help="matriz .npy con las consultas YA codificadas por el "
+                             "mismo modelo y revisión. Produce una salida idéntica "
+                             "a la del camino normal sin descargar los 4,35 GB")
     parser.add_argument("--simulado", action="store_true",
                         help="NO codifica: prueba de formato sin el modelo")
     parser.add_argument("--comprobar", action="store_true",
@@ -401,8 +495,10 @@ def main() -> int:
     buscador = Buscador(args.indice, args.metadata)
     print(f"índice    : {buscador.indice.ntotal:,} vectores")
 
-    modelo = None
-    if not args.simulado:
+    modelo = vectores = None
+    if args.vectores is not None:
+        vectores = cargar_vectores_consulta(args.vectores, consultas)
+    elif not args.simulado:
         from embedding.encoder import MODELO, REVISION, cargar_modelo
 
         print(f"modelo    : {MODELO}  revisión {REVISION}")
@@ -419,7 +515,7 @@ def main() -> int:
     with open(temporal, "w", encoding="utf-8", newline="\n") as f:
         for resultado in generar(consultas, buscador, modelo,
                                  args.max_por_documento, args.bonificacion,
-                                 args.factor_idioma):
+                                 args.factor_idioma, vectores):
             f.write(json.dumps(resultado.to_json(), ensure_ascii=False))
             f.write("\n")
             escritas += 1
