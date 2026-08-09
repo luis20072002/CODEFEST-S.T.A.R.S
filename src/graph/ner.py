@@ -62,9 +62,33 @@ MODELO = "urchade/gliner_multi-v2.1"
 # puede dar otro modelo y otras entidades **sin dar ningún error**.
 REVISION: Optional[str] = "443d26d654e0324125a96bebd8e796c14ff2efe6"
 
-# Umbral de confianza. Más bajo da más entidades **y más falsos positivos**, y un
-# grafo lleno de entidades espurias no cumple el ejemplo de §7.1. El banco lo
-# barre para que se elija con datos.
+# Umbral de confianza. **0,5, elegido el 2026-08-09 mirando las entidades
+# marginales**, no el recuento: que 0,3 dé 7,2 entidades por unidad y 0,7 dé 4,4
+# no dice cuál es mejor. Lo que decide es qué admite un umbral y rechaza el
+# siguiente, porque son exactamente las que están en discusión.
+#
+# **0,7 queda descartado**: pierde `US`, `Finland`, `Earth`,
+# `Data Protection Commission`, `Ministry of Artificial Intelligence and Digital
+# Innovation`, `The Guardian`. Perder el nombre de un país en un corpus de
+# geopolítica no es una opción.
+#
+# **0,3 queda descartado** aunque recupera algún legítimo (`Australia`,
+# `Doha Political Declaration`, `Group of Seven`), porque el resto de lo que mete
+# son **plurales genéricos y artefactos de extracción**: `Readers`,
+# `Republican politicians`, `Extremist movements`, `Co-Directors`, `Data trusts`,
+# `AI systems` etiquetado como lugar, y cadenas pegadas como
+# `Eric SappPresidentPublic Democracy` o
+# `Renee DiRestaTechnical Research ManagerStanford Internet Observatory`.
+#
+# 🔴 Un nodo genérico es **peor que una entidad ausente**: `Governments` o
+# `Individuals` atraen aristas de todo el corpus y no designan nada, así que
+# ensucian el grafo entero en vez de faltar en un sitio. Y los términos de dominio
+# que 0,5 pierde son precisamente los que la tabla de alias de `graph.canonical`
+# cubre por vocabulario controlado.
+#
+# 💡 Las cadenas pegadas vienen de los documentos que `TAREAS.md` Fase 3 bis dejó
+# sin arreglar —PDFs extraídos sin separadores— y aquí se ve su coste: producen
+# nodos basura en el grafo, no solo texto feo en el índice.
 UMBRAL = 0.5
 
 # 🔴 EL PRESUPUESTO SE MIDE EN PALABRAS DE GLiNER, NO EN SUBTOKENS.
@@ -429,12 +453,13 @@ if __name__ == "__main__":
     max_len = getattr(cfg, "max_len", None)
     print(f"config.max_len   : {max_len}")
     print(f"config.max_width : {getattr(cfg, 'max_width', None)}")
-    print(f"presupuesto      : {PRESUPUESTO} tokens de TEXTO")
-    if isinstance(max_len, int):
-        margen = max_len - PRESUPUESTO
-        print(f"margen para el prompt de etiquetas: {margen} tokens")
-        if margen < 60:
-            print("  ⚠️ margen escaso para 9 etiquetas: bajar PRESUPUESTO")
+    print(f"presupuesto      : {PRESUPUESTO} en max(palabras, subtokens)")
+    print(f"unidades totales : {UNIDADES_TOTALES:,} (con ESTE presupuesto)")
+    # ⚠️ Aquí NO se imprime un «margen para el prompt» restando de `max_len`. Esa
+    # cuenta era la de la primera hipótesis falsa: sugería que el presupuesto se
+    # podía deducir de `max_len`, y no se puede — la contabilidad de GLiNER es en
+    # palabras y su sobrecoste no es reproducible a mano. Lo que decide es el
+    # contador de truncamientos del bloque 3, sobre unidades reales.
 
     # ── 3. ¿Cuánto texto cabe de verdad? ─────────────────────────────────────
     print(f"\n{linea}\n3. PRESUPUESTO REAL: BARRIDO SOBRE UNIDADES DEL CORPUS\n{linea}")
@@ -483,10 +508,9 @@ if __name__ == "__main__":
         seg = time.perf_counter() - t0
         ritmo = len(textos) / seg if seg else 0
         total = sum(len(e) for e in ents)
-        # 118.788 es el total a escanear, medido en `ESTADO.md` §18.
-        horas = 118_788 / ritmo / 3600 if ritmo else float("inf")
+        horas = UNIDADES_TOTALES / ritmo / 3600 if ritmo else float("inf")
         print(f"\n  etiquetas {nombre}: {ritmo:5.1f} unidades/s → "
-              f"**{horas:4.1f} h** para 118.788")
+              f"**{horas:4.1f} h** para {UNIDADES_TOTALES:,}")
         print(f"    entidades: {total} ({total/len(textos):.1f} por unidad)")
         print(f"    truncadas: {truncados} de {len(textos)} "
               f"{'🔴 bajar PRESUPUESTO' if truncados else '✔'}")
