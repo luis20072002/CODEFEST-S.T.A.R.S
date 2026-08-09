@@ -87,10 +87,33 @@ UMBRAL = 0.5
 # con puntos guía y cada punto cuenta. Por eso bajar el presupuesto de subtokens
 # no arreglaba nada: el problema no es la longitud, es la densidad de puntuación.
 #
-# Con el presupuesto en palabras, el truncamiento desaparece **por construcción**:
-# la cascada no deja pasar ninguna unidad por encima del tope, y 320 + ~27 del
-# prompt = 347, con 37 de margen sobre 384.
+# 🔴 4. Y con el presupuesto SOLO en palabras aparece el problema simétrico: el
+#    ritmo se parte por dos, de 23,3 a **12,0 unidades/s** (2,8 h en vez de 1,4).
+#    La causa, medida: acotando palabras, las unidades llegan a **943
+#    subtokens** —los mismos textos con puntuación densa, por el otro lado— y el
+#    coste de la atención es superlineal en la longitud de la secuencia.
+#
+# ✅ **La solución es acotar LAS DOS unidades a la vez**, con
+# `contador_combinado()` = `max(palabras, subtokens)`. Medido con presupuesto 320:
+#
+#     contador        máx subtokens   máx palabras   unidades totales
+#     subtokens              318          1.806 🔴        124.786
+#     palabras               943 🔴          320           93.649
+#     max(ambos)             318            311  ✅        127.070
+#
+# Ninguna unidad se desborda por ninguno de los dos lados: **cero truncamiento y
+# sin secuencias largas que penalicen el ritmo**. Cuesta un 2 % más de unidades
+# que el presupuesto en subtokens, y a cambio no pierde texto ni tiempo.
 PRESUPUESTO = 320
+
+# Unidades totales a escanear, para extrapolar el coste.
+#
+# ⚠️ **Depende del contador y del presupuesto, así que hay que recalcularlo si
+# cambia alguno.** El 118.788 que este módulo usó antes se midió con presupuesto
+# en subtokens y quedó obsoleto al pasar a `contador_combinado()`, con lo que las
+# horas extrapoladas salían mal. Medido el 2026-08-09 sobre una muestra de 400
+# chunks: 2,64 unidades por chunk × 48.087 chunks a escanear.
+UNIDADES_TOTALES = 127_070
 
 # El troceador de GLiNER: palabras, o cualquier carácter no blanco suelto. Es lo
 # que hace que «U.S.-based» o una fila de puntos guía cuenten mucho más de lo que
@@ -153,18 +176,34 @@ def sha_del_modelo(nombre: str = MODELO) -> str:
 # ── Troceado en unidades ─────────────────────────────────────────────────────
 
 def contador_de_palabras():
-    """El contador que debe usarse para trocear: **palabras de GLiNER**.
+    """Palabras del troceador de GLiNER. Es la unidad de `max_len`.
 
-    Es la unidad en la que el modelo mide `max_len`, así que es la única con la
-    que el presupuesto garantiza que no haya truncamiento. No necesita descargar
-    nada — es una expresión regular— así que el troceado corre en cualquier
-    máquina, sin modelo y sin GPU.
+    No necesita descargar nada —es una expresión regular—, así que sirve para
+    trocear en cualquier máquina, sin modelo y sin GPU.
 
-    ⚠️ **No usar el contador de subtokens para trocear.** Ver el 🔴 de
-    `PRESUPUESTO`: con subtokens el truncamiento persiste porque la relación entre
-    las dos unidades varía de 0,68 a 6,61 según la densidad de puntuación.
+    ⚠️ Por sí sola **no basta para trocear**: acota el truncamiento pero deja
+    pasar unidades de hasta 943 subtokens, que ralentizan la inferencia a la
+    mitad. Usar `contador_combinado()`.
     """
     return lambda t: len(_PALABRAS_GLINER.findall(t))
+
+
+def contador_combinado(modelo=None):
+    """**El contador que hay que usar para trocear.**
+
+    Devuelve el máximo de las dos contabilidades, de modo que el presupuesto acote
+    las dos a la vez: las palabras porque son la unidad de `max_len` y su
+    desbordamiento trunca, y los subtokens porque son la longitud real de la
+    secuencia y su desbordamiento cuesta tiempo de forma superlineal.
+
+    La justificación medida está en el 🔴 de `PRESUPUESTO`. En resumen: acotar solo
+    una de las dos deja la otra desbordarse, y las dos veces son los **mismos
+    textos** —los de puntuación densa, índices con puntos guía y tablas— los que
+    se desbordan por el lado que quede libre.
+    """
+    palabras = contador_de_palabras()
+    subtokens = contador_de_subtokens(modelo)
+    return lambda t: max(palabras(t), subtokens(t))
 
 
 def contador_de_subtokens(modelo=None):
@@ -380,7 +419,8 @@ if __name__ == "__main__":
     modelo = cargar_modelo()
     # Se trocea con PALABRAS de GLiNER, que es la unidad de `max_len`. El
     # contador de subtokens se usa solo para informar de la divergencia.
-    contar = contador_de_palabras()
+    # Acota palabras Y subtokens a la vez: ver el 🔴 de PRESUPUESTO.
+    contar = contador_combinado(modelo)
     contar_sub = contador_de_subtokens(modelo)
 
     # ── 2. La ventana real ───────────────────────────────────────────────────
