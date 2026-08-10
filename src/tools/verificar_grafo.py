@@ -10,9 +10,7 @@ Mismo patrón que los otros cinco verificadores del proyecto: veredicto explíci
 QUÉ COMPRUEBA, Y POR QUÉ CADA COSA
 
 A. **Estructura (§7.1).** El grafo tiene que ser dirigido y sus aristas tipadas.
-   `T ⊆ E × R × E` no admite una arista sin relación. Y el `id` de cada arista
-   tiene que ser único, que es lo que exige GraphML y lo que decide si el
-   archivo abre en un visor — se comprueba sobre el XML crudo, ver abajo.
+   `T ⊆ E × R × E` no admite una arista sin relación.
 B. **Trazabilidad (§7.2).** Todo `chunk_id` de una arista existe en el
    `metadata.jsonl` entregado. Es la prueba F de `verificar_resultados` aplicada
    al grafo: §7.2 exige que cada tripleta permita «rastrear la evidencia textual»,
@@ -29,6 +27,11 @@ E. **Cobertura.** Cuántos documentos del corpus aportan al menos una tripleta, 
 F. **Sin modelos generativos (§4.2, §8.3).** Se revisan los imports de todo el
    paquete `graph/` buscando bibliotecas de decoders. No es una declaración de
    buena fe: es una comprobación.
+G. **Interoperabilidad.** Que el archivo abra en un visor: `id` de arista únicos
+   (GraphML los exige globalmente únicos) y `label` en los nodos. **Se lee el
+   XML crudo, no el grafo de networkx**, y esa es su razón de ser — ver el
+   comentario del bloque. Existe porque el entregable pasó las otras seis y no
+   abría en ningún visor.
 
 ────────────────────────────────────────────────────────────────────────────────
 LO QUE ESTE VERIFICADOR **NO** PUEDE COMPROBAR
@@ -133,41 +136,6 @@ def main() -> int:
         fallos.append(f"{sin_tipo:,} nodos sin `tipo`")
     else:
         print("   ✔ PASA: todos los nodos tienen `tipo`")
-
-    # 🔴 El `id` de una arista es GLOBALMENTE único en GraphML, y hay que
-    # comprobarlo sobre el **XML crudo**: networkx lee ese atributo como la clave
-    # del multigrafo, que solo es única *por par de nodos*, así que al leer el
-    # archivo la repetición desaparece y `G` se ve perfectamente sano. Toda
-    # prueba que parta de `G` —incluida la D, la de ida y vuelta— es ciega a esto
-    # por construcción. Es la lección nº1 otra vez: mirar siempre por la misma
-    # ventana no enseña lo que hay fuera.
-    #
-    # Lo destapó un visor, no una prueba. El grafo entregado tenía las 3.460
-    # aristas repartiéndose **13 valores de `id`** (el nombre de la relación,
-    # porque `build.py` usaba `key=relacion`), y **graphology** —el motor de
-    # Gephi Lite y de casi todos los visores web— aborta la carga al ver el
-    # segundo repetido:
-    #
-    #     Graph.mergeDirectedEdgeWithKey: inconsistency detected when attempting
-    #     to merge the "coopera_con" edge with … vs. (…)
-    #
-    # Un entregable que no abre en un visor vale lo mismo que no entregarlo.
-    ids_arista = re.findall(r'<edge [^>]*\bid="([^"]*)"',
-                            ruta.read_text(encoding="utf-8"))
-    repetidos = [i for i, n in Counter(ids_arista).items() if n > 1]
-    if repetidos:
-        fallos.append(
-            f"las {len(ids_arista):,} aristas comparten solo "
-            f"{len(set(ids_arista)):,} valores de `id`, y GraphML los exige "
-            f"únicos: los visores basados en graphology no cargarán el archivo. "
-            f"Repetidos: {sorted(repetidos)[:5]}")
-        fallos.append("      se arregla sin reconstruir: "
-                      "`py -m graph.build --reexportar <ruta>`")
-    elif ids_arista:
-        print(f"   ✔ PASA: los {len(ids_arista):,} `id` de arista son únicos")
-    else:
-        avisos.append("las aristas del XML no traen `id`; no se pudo comprobar "
-                      "que sean únicos")
 
     # ── B. Trazabilidad (§7.2) ───────────────────────────────────────────────
     print(f"\n{LINEA}\nB. TRAZABILIDAD (§7.2) — todo chunk_id existe en metadata\n{LINEA}")
@@ -317,6 +285,51 @@ def main() -> int:
                           "el commit y no solo el nombre")
     except ImportError as e:
         avisos.append(f"no se pudo leer la declaración del modelo NER: {e}")
+
+    # ── G. Interoperabilidad ─────────────────────────────────────────────────
+    print(f"\n{LINEA}\nG. INTEROPERABILIDAD — que el archivo abra en un visor\n{LINEA}")
+    # 🔴 Esta prueba lee el **XML crudo**, y esa es su razón de ser. networkx
+    # interpreta el `id` de arista como la clave del multigrafo, que solo es
+    # única *por par de nodos*, así que al leer el archivo la repetición
+    # desaparece y `G` se ve perfectamente sano: **toda comprobación que parta de
+    # `G` —incluida la D, la de ida y vuelta— es ciega a esto por construcción**.
+    #
+    # Lo destapó un visor, no una prueba. El grafo entregado tenía las 3.460
+    # aristas repartiéndose **13 valores de `id`** (el nombre de la relación,
+    # porque `build.py` usaba `key=relacion`), y **graphology** —el motor de
+    # Gephi Lite y de casi todos los visores web— aborta la carga al ver el
+    # segundo repetido:
+    #
+    #     Graph.mergeDirectedEdgeWithKey: inconsistency detected when attempting
+    #     to merge the "coopera_con" edge with … vs. (…)
+    #
+    # §7 es bonus, o sea que existe para que alguien lo mire: un entregable que
+    # no abre en un visor vale lo mismo que no entregarlo.
+    ids_arista = re.findall(r'<edge [^>]*\bid="([^"]*)"',
+                            ruta.read_text(encoding="utf-8"))
+    repetidos = [i for i, n in Counter(ids_arista).items() if n > 1]
+    if repetidos:
+        fallos.append(
+            f"las {len(ids_arista):,} aristas comparten solo "
+            f"{len(set(ids_arista)):,} valores de `id`, y GraphML los exige "
+            f"únicos: los visores basados en graphology no cargarán el archivo. "
+            f"Repetidos: {sorted(repetidos)[:5]}")
+        fallos.append("      se arregla sin reconstruir: "
+                      "`py -m graph.build --reexportar <ruta>`")
+    elif ids_arista:
+        print(f"   ✔ PASA: los {len(ids_arista):,} `id` de arista son únicos")
+    else:
+        avisos.append("las aristas del XML no traen `id`; no se pudo comprobar "
+                      "que sean únicos")
+
+    sin_label = sum(1 for _, d in G.nodes(data=True)
+                    if not str(d.get("label", "")).strip())
+    if sin_label:
+        avisos.append(f"{sin_label:,} nodos sin `label`: los visores pintarán su "
+                      f"identificador (`LOC:estados unidos`) en vez del nombre. "
+                      f"Se añade con `py -m graph.build --reexportar <ruta>`")
+    else:
+        print("   ✔ PASA: todos los nodos traen `label` para el visor")
 
     # ── Veredicto ────────────────────────────────────────────────────────────
     print(f"\n{LINEA}")
