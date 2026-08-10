@@ -10,7 +10,9 @@ Mismo patrón que los otros cinco verificadores del proyecto: veredicto explíci
 QUÉ COMPRUEBA, Y POR QUÉ CADA COSA
 
 A. **Estructura (§7.1).** El grafo tiene que ser dirigido y sus aristas tipadas.
-   `T ⊆ E × R × E` no admite una arista sin relación.
+   `T ⊆ E × R × E` no admite una arista sin relación. Y el `id` de cada arista
+   tiene que ser único, que es lo que exige GraphML y lo que decide si el
+   archivo abre en un visor — se comprueba sobre el XML crudo, ver abajo.
 B. **Trazabilidad (§7.2).** Todo `chunk_id` de una arista existe en el
    `metadata.jsonl` entregado. Es la prueba F de `verificar_resultados` aplicada
    al grafo: §7.2 exige que cada tripleta permita «rastrear la evidencia textual»,
@@ -131,6 +133,41 @@ def main() -> int:
         fallos.append(f"{sin_tipo:,} nodos sin `tipo`")
     else:
         print("   ✔ PASA: todos los nodos tienen `tipo`")
+
+    # 🔴 El `id` de una arista es GLOBALMENTE único en GraphML, y hay que
+    # comprobarlo sobre el **XML crudo**: networkx lee ese atributo como la clave
+    # del multigrafo, que solo es única *por par de nodos*, así que al leer el
+    # archivo la repetición desaparece y `G` se ve perfectamente sano. Toda
+    # prueba que parta de `G` —incluida la D, la de ida y vuelta— es ciega a esto
+    # por construcción. Es la lección nº1 otra vez: mirar siempre por la misma
+    # ventana no enseña lo que hay fuera.
+    #
+    # Lo destapó un visor, no una prueba. El grafo entregado tenía las 3.460
+    # aristas repartiéndose **13 valores de `id`** (el nombre de la relación,
+    # porque `build.py` usaba `key=relacion`), y **graphology** —el motor de
+    # Gephi Lite y de casi todos los visores web— aborta la carga al ver el
+    # segundo repetido:
+    #
+    #     Graph.mergeDirectedEdgeWithKey: inconsistency detected when attempting
+    #     to merge the "coopera_con" edge with … vs. (…)
+    #
+    # Un entregable que no abre en un visor vale lo mismo que no entregarlo.
+    ids_arista = re.findall(r'<edge [^>]*\bid="([^"]*)"',
+                            ruta.read_text(encoding="utf-8"))
+    repetidos = [i for i, n in Counter(ids_arista).items() if n > 1]
+    if repetidos:
+        fallos.append(
+            f"las {len(ids_arista):,} aristas comparten solo "
+            f"{len(set(ids_arista)):,} valores de `id`, y GraphML los exige "
+            f"únicos: los visores basados en graphology no cargarán el archivo. "
+            f"Repetidos: {sorted(repetidos)[:5]}")
+        fallos.append("      se arregla sin reconstruir: "
+                      "`py -m graph.build --reexportar <ruta>`")
+    elif ids_arista:
+        print(f"   ✔ PASA: los {len(ids_arista):,} `id` de arista son únicos")
+    else:
+        avisos.append("las aristas del XML no traen `id`; no se pudo comprobar "
+                      "que sean únicos")
 
     # ── B. Trazabilidad (§7.2) ───────────────────────────────────────────────
     print(f"\n{LINEA}\nB. TRAZABILIDAD (§7.2) — todo chunk_id existe en metadata\n{LINEA}")

@@ -84,6 +84,10 @@ from graph.relations import Triple, extraer_relaciones  # noqa: E402
 RAIZ = Path(__file__).resolve().parents[2]
 SALIDA = RAIZ / "entrega" / "base_vectorial" / "grafo" / "grafo.graphml"
 
+# El núcleo mirable de `--nucleo`. Vive en `src/data/` y **no** en `entrega/`:
+# es una herramienta para verlo y para la figura del informe, no un entregable.
+NUCLEO = RAIZ / "src" / "data" / "grafo_nucleo.graphml"
+
 # Cuántos `chunk_id` se conservan por arista y por nodo. Con tope, el archivo
 # crece con el número de tripletas distintas y no con el de menciones.
 MAX_EVIDENCIAS = 10
@@ -264,18 +268,119 @@ def fusionar_por_clave(G):
     return H
 
 
+def nucleo(G, peso_minimo: int = 2):
+    """Devuelve el esqueleto **mirable** del grafo. NO es el entregable.
+
+    El grafo completo no se puede leer en un visor, y está medido por qué: 603
+    componentes, de los cuales **454 son parejas sueltas** —una única tripleta que
+    no conecta con nada— y 92 son tríos. El 35,2 % de los nodos vive en esas islas
+    y el 88,3 % tiene grado 1 o 2. Aunque se pinte perfecto, es una maraña
+    rodeada de confeti.
+
+    Este filtro deja lo que sí cuenta algo, en dos pasos:
+
+    1. **Aristas con `peso ≥ peso_minimo`**, o sea hechos que el corpus afirma más
+       de una vez. Es un filtro con significado, no un recorte estético: §8.5
+       habla justamente de puntuar «basada en el número de relaciones relevantes
+       encontradas». Una tripleta vista una sola vez es la que más probablemente
+       venga de los falsos positivos de `ESTADO.md` §18.
+    2. **Solo el componente mayor**, que quita las islas que sobreviven al paso 1.
+
+    Medido sobre el grafo entregado:
+
+    | peso mínimo | tras filtrar | solo el gigante |
+    |---|---|---|
+    | 2 (por defecto) | 678 nodos · 660 aristas · 131 comp. | **365 nodos · 475 aristas** |
+    | 3 | 236 nodos · 207 aristas · 54 comp. | **110 nodos · 132 aristas** |
+
+    Con 2 se explora; con **3 sale la figura del `informe_tecnico.pdf`**, que a
+    110 nodos se lee impresa.
+
+    ⚠️ **Se escribe fuera de `entrega/`.** Un `.graphml` de más en la carpeta del
+    entregable invita a que el jurado evalúe el recorte en vez del grafo, y §7
+    pide el grafo del corpus, no su resumen.
+    """
+    import networkx as nx
+
+    H = nx.MultiDiGraph()
+    H.graph.update(G.graph)
+    H.add_nodes_from(G.nodes(data=True))
+    for u, v, k, d in G.edges(keys=True, data=True):
+        if int(d.get("peso", 1)) >= peso_minimo:
+            H.add_edge(u, v, key=k, **d)
+    # Los nodos que se quedan sin ninguna arista tras el filtro ya no pintan nada.
+    H.remove_nodes_from([n for n, g in H.degree() if g == 0])
+    if H.number_of_nodes() == 0:
+        return H
+    mayor = max(nx.weakly_connected_components(H), key=len)
+    return H.subgraph(mayor).copy()
+
+
 def exportar(G, destino: Path = SALIDA) -> Path:
     """Escribe el GraphML, a temporal y renombrando.
 
     El temporal es la misma precaución que en `core/store.py` y en
     `generador.py`: una corrida interrumpida no debe dejar un `.graphml` a medias,
     que es peor que no dejar ninguno porque **parece** un entregable válido.
+
+    🔴 **CUARTA TRAMPA: el `id` de una arista es GLOBALMENTE único en GraphML.**
+
+    `write_graphml` escribe la **clave del multigrafo** en ese atributo, y aquí la
+    clave es el nombre de la relación (ver `construir`). El archivo salía con
+    3.460 aristas repartiéndose **13 valores de `id`**: las 357 `coopera_con`
+    llevaban todas `id="coopera_con"`.
+
+    networkx no se queja porque él interpreta ese `id` como clave **por par de
+    nodos**, no global — así que ida y vuelta le cuadra y las seis pruebas de
+    `tools/verificar_grafo.py` pasaban igual. Pero **graphology**, que es el motor
+    de Gephi Lite y de casi todos los visores web, indexa las aristas por `id` y
+    aborta la carga al ver el segundo repetido:
+
+        Graph.mergeDirectedEdgeWithKey: inconsistency detected when attempting
+        to merge the "coopera_con" edge with "ORG:ai index" source &
+        "ORG:mckinsey & company" target vs. ("ORG:ai index", "ORG:epoch ai")
+
+    Un entregable que no abre en un visor vale lo mismo que no entregarlo, y §7
+    es bonus precisamente por si alguien lo mira.
+
+    ⚠️ **La relación no se pierde** al dejar de ser el `id`: viaja como atributo
+    `relacion`, que este módulo ya declaraba la fuente de verdad y la clave, mera
+    comodidad. Lo único que cambia es que al releer con `edge_key_type=str` la
+    clave es `e123` en vez de `coopera_con`.
+
+    ⚠️ **Se arregla renumerando la CLAVE, no con `edge_id_from_attribute`.** Esa
+    bandera del escritor también da ids únicos, pero **repite el valor como un
+    `<data>` más** en las 3.460 aristas: un campo redundante en el entregable y
+    ~100 KB de archivo a cambio de nada. Renumerar la clave en una copia deja el
+    archivo exactamente igual que antes salvo por el `id`.
     """
     import networkx as nx
 
+    # Copia con la clave de arista sustituida por un identificador propio. Se
+    # trabaja sobre una copia para no alterar el grafo que tenga el llamador —
+    # `main()` imprime `resumen(G)` después de exportar.
+    #
+    # El orden de `G.edges()` es el de inserción, así que la numeración es
+    # **determinista**: dos exportaciones del mismo grafo dan el mismo archivo,
+    # que es lo que exige §1.4.
+    H = nx.MultiDiGraph()
+    H.graph.update(G.graph)
+    for n, datos in G.nodes(data=True):
+        # `label` es lo que los visores pintan **por convención**. Sin él muestran
+        # el identificador, que va en minúscula, sin tildes y con el tipo delante
+        # (`LOC:estados unidos` en vez de `Estados Unidos`), porque se construye
+        # desde la clave canónica. No es un dato nuevo: es una copia de `nombre`
+        # puesta donde el lector la busca, igual que el `id` de arista de abajo.
+        H.add_node(n, **{**datos, "label": datos.get("nombre", n)})
+    for i, (u, v, _, datos) in enumerate(G.edges(keys=True, data=True)):
+        # Se descarta un `id` que viniera en los datos: lo dejaba una versión
+        # anterior de esta función y volvería a escribirse como `<data>`.
+        H.add_edge(u, v, key=f"e{i}",
+                   **{k: x for k, x in datos.items() if k != "id"})
+
     destino.parent.mkdir(parents=True, exist_ok=True)
     temporal = destino.with_suffix(destino.suffix + ".parcial")
-    nx.write_graphml(G, temporal, encoding="utf-8", prettyprint=True)
+    nx.write_graphml(H, temporal, encoding="utf-8", prettyprint=True)
     temporal.replace(destino)
     return destino
 
@@ -404,7 +509,65 @@ def main() -> int:
     parser.add_argument("--fusionar", type=Path, default=None,
                         help="repara un .graphml existente fusionando los nodos "
                              "que comparten clave canónica. Segundos, sin modelo")
+    parser.add_argument("--reexportar", type=Path, default=None,
+                        help="reescribe un .graphml existente con el escritor "
+                             "actual, sin reconstruirlo. Segundos, sin modelo")
+    parser.add_argument("--nucleo", type=Path, default=None,
+                        help="extrae el esqueleto mirable de un .graphml "
+                             "(aristas corroboradas + componente mayor) a "
+                             "src/data/. NO es el entregable")
+    parser.add_argument("--peso-minimo", type=int, default=2,
+                        help="peso mínimo de arista para --nucleo (2 explora, "
+                             "3 da la figura del informe)")
     args = parser.parse_args()
+
+    if args.nucleo is not None:
+        import networkx as nx
+
+        # Que un recorte no pise el entregable, igual que hace `--demo`.
+        if args.salida == SALIDA:
+            args.salida = NUCLEO
+        print(f"leyendo {args.nucleo.name}…")
+        G = nx.read_graphml(args.nucleo, force_multigraph=True,
+                            edge_key_type=str)
+        H = nucleo(G, args.peso_minimo)
+        ruta = exportar(H, args.salida)
+        linea = "─" * 74
+        print(f"\n{linea}")
+        print(f"⚠️  ESTO NO ES EL ENTREGABLE: es el grafo recortado para poder")
+        print(f"    mirarlo. El de §7 sigue siendo {SALIDA.name} entero.\n")
+        print(f"  entero  : {G.number_of_nodes():,} nodos · "
+              f"{G.number_of_edges():,} aristas")
+        print(f"  núcleo  : {H.number_of_nodes():,} nodos · "
+              f"{H.number_of_edges():,} aristas  (peso >= {args.peso_minimo}, "
+              f"un solo componente)")
+        print(f"\n  {resumen(H)}")
+        print(f"\n  archivo : {ruta}   ({ruta.stat().st_size / 1e3:,.0f} KB)")
+        print(f"{linea}")
+        return 0
+
+    # `--reexportar` no toca el grafo: lo lee y lo vuelve a escribir. Existe para
+    # aplicar un arreglo del ESCRITOR —como los `id` de arista únicos— sin repetir
+    # las ~2 h de GPU de la pasada completa.
+    #
+    # ⚠️ **Para esto NO sirve `--fusionar`.** Sobre un grafo ya fusionado sus
+    # grupos son de un solo nodo, y entonces recalcula `variantes` a partir de ese
+    # único miembro: `iHEALTH | iHealth` se quedaría en `iHEALTH` y `n_variantes`
+    # volvería a 1. Se perdería la trazabilidad de qué formas colapsó cada nodo.
+    if args.reexportar is not None:
+        import networkx as nx
+
+        print(f"leyendo {args.reexportar.name}…")
+        G = nx.read_graphml(args.reexportar, force_multigraph=True,
+                            edge_key_type=str)
+        ruta = exportar(G, args.salida)
+        linea = "─" * 74
+        print(f"\n{linea}")
+        print(f"  {G.number_of_nodes():,} nodos · {G.number_of_edges():,} aristas "
+              f"(sin cambios: solo se reescribe el archivo)")
+        print(f"\n  archivo : {ruta}   ({ruta.stat().st_size / 1e6:,.2f} MB)")
+        print(f"{linea}\nSiguiente: py -m tools.verificar_grafo")
+        return 0
 
     # `--fusionar` no construye nada: repara. Se atiende antes de todo lo demás.
     if args.fusionar is not None:
