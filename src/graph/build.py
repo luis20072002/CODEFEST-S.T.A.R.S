@@ -78,7 +78,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from graph.canonical import cargar_alias  # noqa: E402
+from graph.canonical import cargar_alias, clave_canonica  # noqa: E402
 from graph.relations import Triple, extraer_relaciones  # noqa: E402
 
 RAIZ = Path(__file__).resolve().parents[2]
@@ -97,9 +97,35 @@ POSICIONES_EXCLUIDAS = {0}
 
 # ── Construcción ─────────────────────────────────────────────────────────────
 
+def id_nodo(nombre: str, tipo: str) -> str:
+    """El identificador de un nodo en el grafo: `tipo:clave_canónica`.
+
+    🔴 **Se indexa por la CLAVE, no por el nombre, y esto fue un bug real.** La
+    primera versión usaba `f"{tipo}:{nombre}"`, y el resultado lo destapó la
+    prueba C del verificador sobre el grafo completo: **93 grupos de nodos
+    compartían clave canónica**, entre ellos `['Israel', 'ISRAEL']`,
+    `['India', 'INDIA', 'india']` y `['Canada', 'Canadá']`.
+
+    La causa: `clave_canonica()` colapsa correctamente mayúsculas y tildes, pero
+    `canonizar()` **conserva el nombre tal como vino** cuando no hay entrada en la
+    tabla de alias — porque §7 no pide reescribir el texto. Indexar por el nombre
+    volvía a separar todo lo que la clave había unido, y la canonicalización solo
+    funcionaba para las entidades que la tabla de alias enumeraba.
+
+    `canonical.agrupar_por_identidad()` ya lo hacía bien; el error fue
+    reimplementar aquí el agrupamiento en vez de usar esa identidad.
+    """
+    return f"{tipo}:{clave_canonica(nombre)}"
+
+
 def _clave_arista(t: Triple) -> Tuple[str, str, str, str, str]:
-    """Identidad de una tripleta: sujeto, tipo, relación, objeto, tipo."""
-    return (t.subject, t.subject_type, t.relation, t.object, t.object_type)
+    """Identidad de una tripleta: sujeto, tipo, relación, objeto, tipo.
+
+    Los extremos se identifican por su **clave**, para que la arista de
+    `('ISRAEL', ataca, X)` y la de `('Israel', ataca, X)` sean la misma.
+    """
+    return (clave_canonica(t.subject), t.subject_type, t.relation,
+            clave_canonica(t.object), t.object_type)
 
 
 def construir(tripletas: Iterable[Triple],
@@ -115,8 +141,14 @@ def construir(tripletas: Iterable[Triple],
 
     G = nx.MultiDiGraph()
     aristas: Dict[Tuple, Dict] = {}
-    chunks_por_nodo: Dict[Tuple[str, str], List[str]] = defaultdict(list)
-    fenomenos_por_nodo: Dict[Tuple[str, str], set] = defaultdict(set)
+    chunks_por_nodo: Dict[str, List[str]] = defaultdict(list)
+    fenomenos_por_nodo: Dict[str, set] = defaultdict(set)
+    tipo_por_nodo: Dict[str, str] = {}
+    # Cuántas veces se ha visto cada forma superficial de un nodo. El nombre que
+    # se muestra es el **más frecuente**, con desempate alfabético para que sea
+    # determinista (§1.4): «Israel» debe ganar a «ISRAEL» porque aparece más, no
+    # porque llegara antes en el recorrido.
+    formas_por_nodo: Dict[str, Counter] = defaultdict(Counter)
 
     for t in tripletas:
         clave = _clave_arista(t)
@@ -142,16 +174,28 @@ def construir(tripletas: Iterable[Triple],
         fen = t.doc_id[1] if t.doc_id[:1] == "F" else "?"
         for nombre, tipo in ((t.subject, t.subject_type),
                              (t.object, t.object_type)):
-            fenomenos_por_nodo[(nombre, tipo)].add(fen)
-            lista = chunks_por_nodo[(nombre, tipo)]
+            nodo = id_nodo(nombre, tipo)
+            tipo_por_nodo[nodo] = tipo
+            formas_por_nodo[nodo][nombre] += 1
+            fenomenos_por_nodo[nodo].add(fen)
+            lista = chunks_por_nodo[nodo]
             if t.chunk_id and len(lista) < max_evidencias and t.chunk_id not in lista:
                 lista.append(t.chunk_id)
 
     # Nodos primero, para que lleven sus atributos aunque no tengan aristas.
-    for (nombre, tipo), chunks in chunks_por_nodo.items():
-        G.add_node(f"{tipo}:{nombre}", nombre=nombre, tipo=tipo,
-                   fenomenos="".join(sorted(fenomenos_por_nodo[(nombre, tipo)])),
-                   chunk_ids=" ".join(chunks), n_chunks=len(chunks))
+    for nodo, chunks in chunks_por_nodo.items():
+        formas = formas_por_nodo[nodo]
+        # `-n` primero y luego el nombre: más frecuente gana, y a igualdad el
+        # orden alfabético decide. Sin el desempate, dos corridas podrían mostrar
+        # nombres distintos para el mismo nodo.
+        nombre = min(formas.items(), key=lambda kv: (-kv[1], kv[0]))[0]
+        G.add_node(nodo, nombre=nombre, tipo=tipo_por_nodo[nodo],
+                   fenomenos="".join(sorted(fenomenos_por_nodo[nodo])),
+                   chunk_ids=" ".join(chunks), n_chunks=len(chunks),
+                   # Las demás formas se conservan: son la trazabilidad de qué
+                   # colapsó en este nodo, y lo que se mira para curar la tabla.
+                   variantes=" | ".join(sorted(formas)[:8]),
+                   n_variantes=len(formas))
 
     for (suj, t_suj, rel, obj, t_obj), a in aristas.items():
         # ⚠️ `chunk_ids` se serializa a cadena AQUÍ: GraphML no admite listas y
@@ -162,6 +206,62 @@ def construir(tripletas: Iterable[Triple],
                    chunk_ids=" ".join(a["chunk_ids"]),
                    evidencia=a["evidencia"][:200], pasiva=bool(a["pasiva"]))
     return G
+
+
+def fusionar_por_clave(G):
+    """Repara un grafo ya construido fusionando nodos que comparten clave.
+
+    💡 **Existe para no repetir las dos horas de GPU.** El grafo de la primera
+    pasada se construyó con el bug de `id_nodo()` —nodos indexados por nombre— y
+    reconstruirlo desde el corpus costaría otra pasada completa. Esta función hace
+    la fusión sobre el `.graphml` ya escrito, en segundos y sin modelo.
+
+    Conserva de cada grupo el nombre **más frecuente por grado**, suma los pesos
+    de las aristas que colapsan y une sus evidencias respetando el tope.
+    """
+    import networkx as nx
+
+    grupos: Dict[str, List[str]] = defaultdict(list)
+    for n, d in G.nodes(data=True):
+        grupos[id_nodo(d.get("nombre", n), d.get("tipo", "?"))].append(n)
+
+    H = nx.MultiDiGraph()
+    destino_de: Dict[str, str] = {}
+    for nuevo, viejos in grupos.items():
+        # Nombre representativo: mayor grado, y a igualdad orden alfabético.
+        elegido = min(viejos, key=lambda v: (-G.degree(v),
+                                             G.nodes[v].get("nombre", v)))
+        d = dict(G.nodes[elegido])
+        chunks, fen, formas = [], set(), set()
+        for v in viejos:
+            destino_de[v] = nuevo
+            dv = G.nodes[v]
+            formas.add(dv.get("nombre", v))
+            fen.update(str(dv.get("fenomenos", "")))
+            for c in str(dv.get("chunk_ids", "")).split():
+                if c not in chunks and len(chunks) < MAX_EVIDENCIAS:
+                    chunks.append(c)
+        d.update(chunk_ids=" ".join(chunks), n_chunks=len(chunks),
+                 fenomenos="".join(sorted(x for x in fen if x)),
+                 variantes=" | ".join(sorted(formas)[:8]),
+                 n_variantes=len(formas))
+        H.add_node(nuevo, **d)
+
+    for u, v, k, d in G.edges(keys=True, data=True):
+        nu, nv = destino_de[u], destino_de[v]
+        if nu == nv:
+            continue          # el bucle que aparece al fusionar no informa nada
+        if H.has_edge(nu, nv, k):
+            actual = H.edges[nu, nv, k]
+            actual["peso"] = int(actual.get("peso", 1)) + int(d.get("peso", 1))
+            ids = actual.get("chunk_ids", "").split()
+            for c in str(d.get("chunk_ids", "")).split():
+                if c not in ids and len(ids) < MAX_EVIDENCIAS:
+                    ids.append(c)
+            actual["chunk_ids"] = " ".join(ids)
+        else:
+            H.add_edge(nu, nv, key=k, **dict(d))
+    return H
 
 
 def exportar(G, destino: Path = SALIDA) -> Path:
@@ -193,8 +293,11 @@ def resumen(G) -> str:
         f"por tipo de nodo : {dict(tipos.most_common())}",
         f"por relación     : {dict(rels.most_common())}",
         f"componentes      : {nx.number_weakly_connected_components(G):,}",
-        "más conectados   : " + ", ".join(f"{n.split(':',1)[1]} ({g})"
-                                          for n, g in grados),
+        # ⚠️ Se lee el atributo `nombre`, NO el identificador: desde que los nodos
+        # se indexan por clave canónica, el id va en minúsculas y sin tildes
+        # (`LOC:estados unidos`), que no es lo que un humano quiere leer.
+        "más conectados   : " + ", ".join(
+            f"{G.nodes[n].get('nombre', n)} ({g})" for n, g in grados),
     ]
     return "\n  ".join(lineas)
 
@@ -298,7 +401,31 @@ def main() -> int:
                         help="tope de unidades, para una corrida corta")
     parser.add_argument("--salida", type=Path, default=SALIDA)
     parser.add_argument("--max-evidencias", type=int, default=MAX_EVIDENCIAS)
+    parser.add_argument("--fusionar", type=Path, default=None,
+                        help="repara un .graphml existente fusionando los nodos "
+                             "que comparten clave canónica. Segundos, sin modelo")
     args = parser.parse_args()
+
+    # `--fusionar` no construye nada: repara. Se atiende antes de todo lo demás.
+    if args.fusionar is not None:
+        import networkx as nx
+
+        print(f"leyendo {args.fusionar.name}…")
+        G = nx.read_graphml(args.fusionar, force_multigraph=True,
+                            edge_key_type=str)
+        antes = (G.number_of_nodes(), G.number_of_edges())
+        H = fusionar_por_clave(G)
+        ruta = exportar(H, args.salida)
+        linea = "─" * 74
+        print(f"\n{linea}")
+        print(f"  antes   : {antes[0]:,} nodos · {antes[1]:,} aristas")
+        print(f"  después : {H.number_of_nodes():,} nodos · "
+              f"{H.number_of_edges():,} aristas")
+        print(f"  fusionados: {antes[0] - H.number_of_nodes():,} nodos")
+        print(f"\n  {resumen(H)}")
+        print(f"\n  archivo : {ruta}   ({ruta.stat().st_size / 1e6:,.2f} MB)")
+        print(f"{linea}\nSiguiente: py -m tools.verificar_grafo")
+        return 0
 
     if args.demo and args.salida == SALIDA:
         # Que una prueba no pise el entregable, igual que en `generador.py`.
