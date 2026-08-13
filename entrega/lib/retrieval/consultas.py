@@ -18,6 +18,13 @@ recuperación real es translingüe español→inglés contra un corpus 55 % en i
 y no una recuperación multilingüe simétrica.
 """
 
+# El comité fijó Python >= 3.9.5 como entorno de evaluación, y este módulo anota
+# `int | None` (PEP 604), que no existe hasta 3.10. Las anotaciones se evalúan al
+# definir la función, así que sin esta línea el import falla con TypeError y
+# `generador.py` muere antes de hacer nada. Con ella quedan como cadenas y no se
+# evalúan nunca. No cambia el comportamiento en 3.10+.
+from __future__ import annotations
+
 import re
 from pathlib import Path
 from typing import List, Tuple

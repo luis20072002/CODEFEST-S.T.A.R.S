@@ -19,6 +19,14 @@ entre los tres idiomas del corpus. Verificado leyendo el PDF entero; ver
 `ESTADO.md` §5. Es lo que convierte el reto en cross-lingual.
 """
 
+# El comité fijó Python >= 3.9.5 como entorno de evaluación, y este módulo anota
+# `int | None` (PEP 604), que no existe hasta 3.10. Las anotaciones se evalúan al
+# definir la función, así que sin esta línea el import falla con TypeError y
+# `generador.py` muere antes de hacer nada. Va también aquí, y no solo en la copia
+# de `entrega/lib/`, para que volver a copiar `src/` sobre la entrega no
+# reintroduzca el fallo. No cambia el comportamiento en 3.10+.
+from __future__ import annotations
+
 import re
 import sys
 from pathlib import Path

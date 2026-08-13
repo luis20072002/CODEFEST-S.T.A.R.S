@@ -71,6 +71,14 @@ producto interno **es** el coseno. Si se indexan sin normalizar, los fragmentos
 largos ganan por tener norma mayor, no por ser más relevantes.
 """
 
+# El comité fijó Python >= 3.9.5 como entorno de evaluación, y este módulo anota
+# `str | None` (PEP 604), que no existe hasta 3.10. Las anotaciones se evalúan al
+# definir la función, así que sin esta línea el import falla con TypeError y
+# `generador.py` no puede cargar el encoder. Va también aquí, y no solo en la copia
+# de `entrega/lib/`, para que volver a copiar `src/` sobre la entrega no
+# reintroduzca el fallo. No cambia el comportamiento en 3.10+.
+from __future__ import annotations
+
 import sys
 import time
 from pathlib import Path

@@ -28,6 +28,14 @@ DOS DETALLES DE CODIFICACIÓN QUE NO SON OPCIONALES EN WINDOWS:
   que el archivo se pueda leer y auditar tal cual.
 """
 
+# El comité fijó Python >= 3.9.5 como entorno de evaluación, y este módulo anota
+# `str | Path` (PEP 604), que no existe hasta 3.10. Las anotaciones se evalúan al
+# definir la función, así que sin esta línea el import falla con TypeError. Va
+# también aquí, y no solo en la copia de `entrega/lib/`, para que volver a copiar
+# `src/` sobre la entrega no reintroduzca el fallo. No cambia el comportamiento en
+# 3.10+, y aquí no hay dataclasses ni introspección de anotaciones que lo note.
+from __future__ import annotations
+
 import json
 from dataclasses import asdict
 from pathlib import Path

@@ -27,6 +27,13 @@ DOS DETALLES DE CODIFICACIÓN QUE NO SON OPCIONALES
   que los archivos sean legibles y auditables tal cual.
 """
 
+# El comité fijó Python >= 3.9.5 como entorno de evaluación, y este módulo anota
+# `str | Path` (PEP 604), que no existe hasta 3.10. Las anotaciones se evalúan al
+# definir la función, así que sin esta línea el import falla con TypeError. Con
+# ella quedan como cadenas y no se evalúan nunca. No cambia el comportamiento en
+# 3.10+, y aquí no hay dataclasses ni introspección de anotaciones que lo note.
+from __future__ import annotations
+
 import json
 from dataclasses import asdict
 from pathlib import Path

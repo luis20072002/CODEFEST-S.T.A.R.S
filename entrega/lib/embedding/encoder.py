@@ -64,6 +64,13 @@ fragmentos largos puntuarían más alto por tener mayor norma y no por ser más
 relevantes.
 """
 
+# El comité fijó Python >= 3.9.5 como entorno de evaluación, y este módulo anota
+# `str | None` (PEP 604), que no existe hasta 3.10. Las anotaciones se evalúan al
+# definir la función, así que sin esta línea el import falla con TypeError y
+# `generador.py` no puede cargar el encoder. Con ella quedan como cadenas y no se
+# evalúan nunca. No cambia el comportamiento en 3.10+.
+from __future__ import annotations
+
 import time
 from pathlib import Path
 from typing import Callable, List, Sequence
