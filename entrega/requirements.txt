@@ -1,64 +1,76 @@
 # CODEFEST AD ASTRA 2026 · Etapa 1 — Equipo S.T.A.R.S
-# DEPENDENCIAS MÍNIMAS PARA REPRODUCIR `resultados.jsonl`
+# DEPENDENCIAS PARA REPRODUCIR `resultados.jsonl`
 #
 #     pip install -r requirements.txt
 #     python generador.py
-#     # → resultados.jsonl (50 líneas, §9.3)
-#
-# Python 3.13.0 (probado también en 3.12, el de Google Colab).
+#     python generador.py --comprobar     # verifica la reproducibilidad (§1.4)
 #
 # ─────────────────────────────────────────────────────────────────────────────
-# POR QUÉ ESTE ARCHIVO ES CORTO, Y POR QUÉ ESO ES DELIBERADO
+# POR QUÉ LA LISTA ES CORTA
 #
 # §1.4 define `generador.py` como un «Script Python que utilice el índice, lea
-# el archivo de consultas y genere el archivo de resultados». **Usa el índice ya
-# construido; no reconstruye el corpus.** Todo el trabajo de extracción, OCR,
-# limpieza, chunking y codificación ocurrió aguas arriba y su resultado va
-# horneado dentro de `base_vectorial/`.
+# el archivo de consultas y genere el archivo de resultados». Utiliza el índice
+# ya construido; no reconstruye el corpus. Toda la extracción, el OCR, la
+# normalización, la fragmentación y la codificación ocurrieron aguas arriba y su
+# resultado está contenido en `base_vectorial/`.
 #
-# Consecuencia: aquí NO hacen falta `pdfplumber`, `PyMuPDF`, `pytesseract`,
-# `openpyxl`, `mapbox-vector-tile` ni el binario de Tesseract. Declararlos sería
-# darle a quien reproduzca la entrega más superficie para que algo falle, y
-# **cualquier fallo de instalación impide correr el generador**, que es
-# exactamente lo que §1.4 castiga con la exclusión.
+# En consecuencia, aquí no se requieren bibliotecas de lectura de PDF, de OCR ni
+# de hojas de cálculo, ni el binario de Tesseract. Declararlas ampliaría la
+# superficie de fallo de la instalación sin ninguna contrapartida, y una
+# instalación fallida impide ejecutar el generador.
 #
-# Los cuatro paquetes de abajo son los ÚNICOS imports de terceros en toda la
-# cadena que `generador.py` arrastra. Verificado leyendo los imports de
-# `generador.py`, `retrieval/consultas.py`, `retrieval/search.py`,
-# `retrieval/fragmentos.py`, `embedding/encoder.py`, `chunking/chunker.py` y
-# `core/chunk.py`: los tres últimos no importan nada de terceros.
-#
-# La lista completa que usamos para CONSTRUIR el índice está en el
-# `requirements.txt` de la raíz del repositorio, y no hace falta aquí.
+# Los cuatro primeros paquetes son los únicos imports de terceros de toda la
+# cadena que `generador.py` recorre. Los cinco siguientes son transitivas que se
+# fijan porque determinan los valores numéricos de los embeddings.
 #
 # ─────────────────────────────────────────────────────────────────────────────
-# ⚠️ EL MODELO SE DESCARGA EN TIEMPO DE EJECUCIÓN
+# EL MODELO SE DESCARGA EN TIEMPO DE EJECUCIÓN
 #
-# `sentence-transformers` baja `BAAI/bge-m3` (4,35 GB) de HuggingFace la primera
-# vez. La **revisión está fijada por sha** en `src/embedding/encoder.py`
-# (`5617a9f61b028005a4858fdac845db406aefb181`): sin eso se podría descargar otra
-# versión del modelo, los vectores de la consulta dejarían de vivir en el mismo
-# espacio que los del índice y el ranking cambiaría **sin dar ningún error**.
+# `sentence-transformers` descarga `BAAI/bge-m3` (4,35 GB) desde HuggingFace la
+# primera vez. La revisión está fijada por sha de commit en
+# `lib/embedding/encoder.py`:
 #
-# Codificar las 50 consultas cuesta ~8 min en CPU y segundos en GPU.
+#     5617a9f61b028005a4858fdac845db406aefb181
 #
-# ⚠️ `faiss-cpu`, NUNCA `faiss-gpu`: esto se ejecuta en la máquina de quien
-# evalúa y puede no haber GPU. Un índice plano (`IndexFlatIP`) no se entrena, así
-# que la GPU no aportaría nada.
+# Sin fijarla podría descargarse otra versión del modelo, los vectores de la
+# consulta dejarían de residir en el mismo espacio que los del índice y el
+# ranking cambiaría sin emitir ningún error.
 #
-# ⚠️ NO añadir `pathlib`: el paquete `pathlib` de PyPI es un backport viejo que
-# puede sombrear el `pathlib` de la librería estándar. Estuvo aquí por error.
+# Codificar las 50 consultas lleva unos 8 minutos en CPU y segundos en GPU.
+#
+# Se declara `faiss-cpu` y no `faiss-gpu`: una vez construido el índice, la
+# ejecución en CPU es suficiente, y un índice plano no requiere entrenamiento.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# ENTORNO DE REFERENCIA OBSERVADO
+#
+# El `resultados.jsonl` entregado (801.865 bytes, 50 líneas,
+# sha256 1ec6f8200bd70575243e3259b0cd933966ec976905994c5d5d9ac79edabccb70)
+# se generó en el siguiente entorno, registrado en `resultados.manifest.json`:
+#
+#     Python 3.12.13 · Linux x86_64 · CPU
+#     faiss-cpu 1.15.0            numpy   2.0.2
+#     sentence-transformers 5.6.0 torch   2.11.0+cpu
+#     transformers 5.13.1         pypdf   6.15.0
+#
+# La salida se verificó **idéntica byte a byte** en dos sesiones independientes
+# con descarga fresca del modelo y versiones distintas de biblioteca
+# (`sentence-transformers` 5.6.0 y 5.7.0, `numpy` 2.0.2 y 2.5.1), de modo que el
+# resultado no depende de esas versiones concretas dentro del rango probado.
+#
+# Los pines de abajo corresponden a versiones verificadas e instalables en
+# Python 3.12 y 3.13. Si `--comprobar` advierte de una diferencia de versión
+# respecto al manifiesto, se trata de un aviso informativo: el contraste que
+# determina la reproducibilidad es el del sha256 de la salida y la
+# configuración de recuperación, que el propio comando verifica.
 
-# ── Los cuatro imports directos ──────────────────────────────────────────────
+# ── Imports directos ─────────────────────────────────────────────────────────
 faiss-cpu==1.15.0
 sentence-transformers==5.7.0
 pypdf==6.15.0
 numpy==2.5.1
 
-# ── Transitivas que sí conviene fijar ────────────────────────────────────────
-# `sentence-transformers` las instala solo, pero son las que determinan los
-# valores numéricos de los embeddings. Fijarlas es lo que hace que el ranking
-# sea el mismo y no solo «parecido», que es lo que §1.4 exige.
+# ── Transitivas fijadas ──────────────────────────────────────────────────────
 torch==2.13.0
 transformers==5.14.1
 tokenizers==0.22.2

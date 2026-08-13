@@ -1,166 +1,239 @@
-"""Convierte `entrega/informe_tecnico.md` a PDF y cuenta las páginas.
+"""Convierte `entrega/informe_tecnico.md` en `entrega/informe_tecnico.pdf`.
 
-    py -m tools.informe_a_pdf                          # md → pdf, rutas por defecto
-    py -m tools.informe_a_pdf otro.md otro.pdf
+    py -m tools.informe_a_pdf              # convierte y cuenta las paginas
+    py -m tools.informe_a_pdf --abrir      # ademas lo abre al terminar
 
-**Devuelve código 1 si el PDF pasa de 8 páginas**, que es el tope de §1.4, para que
-pueda encadenarse como los demás verificadores del proyecto.
+§1.4 exige un «Documento tecnico en PDF (maximo 8 paginas)». Este script hace
+las dos cosas: lo genera y **cuenta las paginas reales**, devolviendo codigo de
+salida 1 si se pasa del limite. El tope no se estima mirando el .md: se mide
+sobre el PDF renderizado.
 
-No hay pandoc ni LaTeX en esta máquina, pero **PyMuPDF ya está instalado** —lo usan
-los loaders— y su API `fitz.Story` pagina HTML+CSS. Cubre el subconjunto de Markdown
-que usa el informe: encabezados, negrita, cursiva, código en línea, bloques de
-código, tablas, listas y reglas horizontales.
+POR QUE PyMuPDF Y NO UN CONVERSOR EXTERNO. No hay pandoc, wkhtmltopdf ni
+LibreOffice en la maquina de trabajo, y anadir una dependencia mas a una entrega
+que §1.4 juzga por reproducibilidad no compensa. PyMuPDF ya estaba instalado
+para el rasterizado de paginas del OCR, y su API `Story` renderiza HTML a PDF y
+permite paginar contando.
 
-⚠️ **El límite de 8 páginas depende de este conversor.** La tipografía de `CSS` y los
-márgenes son los que producen el resultado medido; convertir el mismo `.md` con otra
-herramienta pagina distinto y hay que volver a medir. Si hay que recortar, mide
-primero qué sección cae en qué página: en la primera pasada la prosa no era lo que
-ocupaba, sino los bloques preformateados.
+⚠️ LIMITACION DE CARACTERES. `Story` usa las fuentes base-14 del PDF (Times,
+Helvetica), que solo cubren Latin-1. Las vocales acentuadas, la «n» con tilde,
+el simbolo § y las comillas angulares entran; la raya larga, las comillas
+tipograficas, las flechas y los signos <= no. `_sanear()` los sustituye por
+equivalentes ASCII antes de renderizar, para que no salgan huecos en blanco.
 """
+
 import html as _html
 import re
 import sys
 from pathlib import Path
 
-import fitz
+import pymupdf
 
-A4 = fitz.paper_rect("a4")
-MARGEN = 46          # ~1,6 cm
+RAIZ = Path(__file__).resolve().parents[2]
+ORIGEN = RAIZ / "entrega" / "informe_tecnico.md"
+DESTINO = RAIZ / "entrega" / "informe_tecnico.pdf"
+MAX_PAGINAS = 8
 
-CSS = """
-body { font-family: sans-serif; font-size: 8.8pt; line-height: 1.28; }
-h1 { font-size: 16pt; margin: 0 0 2pt 0; }
-h2 { font-size: 11.5pt; margin: 9pt 0 3pt 0; }
-h3 { font-size: 9.6pt; margin: 7pt 0 2pt 0; }
-p  { margin: 0 0 4pt 0; text-align: justify; }
-li { margin: 0 0 2pt 0; }
-pre { font-family: monospace; font-size: 7.2pt; line-height: 1.18;
-      margin: 3pt 0 5pt 0; }
-code { font-family: monospace; font-size: 8pt; }
-table { font-size: 7.9pt; margin: 3pt 0 5pt 0; }
-th { text-align: left; font-weight: bold; }
-td { padding-right: 6pt; }
-hr { margin: 6pt 0; }
-"""
+# Caracteres fuera de Latin-1 que aparecen al escribir en espanol, con su
+# equivalente representable. Se aplican al texto ya leido, antes del HTML.
+SUSTITUCIONES = {
+    "—": "-", "–": "-", "‘": "'", "’": "'",
+    "“": '"', "”": '"', "…": "...", "→": "->",
+    "≤": "<=", "≥": ">=", "×": "x", "≈": "~",
+    "✓": "", "✗": "", "‑": "-", " ": " ",
+    "─": "-", "•": "-",
+}
 
 
-def en_linea(t: str) -> str:
-    """Negrita, cursiva y codigo en linea. El escapado va antes que el marcado."""
-    t = _html.escape(t)
-    t = re.sub(r"`([^`]+)`", r"<code>\1</code>", t)
-    t = re.sub(r"\*\*([^*]+)\*\*", r"<b>\1</b>", t)
-    t = re.sub(r"(?<!\*)\*([^*]+)\*(?!\*)", r"<i>\1</i>", t)
-    return t
+def _sanear(texto: str) -> str:
+    for malo, bueno in SUSTITUCIONES.items():
+        texto = texto.replace(malo, bueno)
+    # Cualquier resto fuera de Latin-1 se elimina en vez de dejar un hueco.
+    return texto.encode("latin-1", "ignore").decode("latin-1")
 
 
-def md_a_html(md: str) -> str:
-    # Los emoji no existen en las fuentes base del renderizador y saldrian como
-    # hueco; en un informe formal no aportan nada.
-    md = md.replace("⚠️", "").replace("🔴", "").replace("💡", "").replace("✅", "")
-    lineas = md.splitlines()
-    salida, i = [], 0
+def _en_linea(texto: str) -> str:
+    """Marcado de nivel de linea: negrita, cursiva y codigo.
+
+    Se escapa primero el HTML y despues se aplican los patrones, para que un
+    `<` del texto no se interprete como etiqueta.
+    """
+    texto = _html.escape(texto)
+    texto = re.sub(r"`([^`]+)`", r"<code>\1</code>", texto)
+    texto = re.sub(r"\*\*([^*]+)\*\*", r"<b>\1</b>", texto)
+    texto = re.sub(r"(?<!\*)\*([^*]+)\*(?!\*)", r"<i>\1</i>", texto)
+    return texto
+
+
+def markdown_a_html(md: str) -> str:
+    """Convierte el subconjunto de Markdown que usa el informe.
+
+    Cubre encabezados, parrafos, listas, tablas y reglas horizontales. No
+    pretende ser un conversor general: solo lo que el documento emplea.
+    """
+    lineas = _sanear(md).split("\n")
+    salida: list[str] = []
+    i = 0
+    en_lista = False
+
+    def cerrar_lista() -> None:
+        nonlocal en_lista
+        if en_lista:
+            salida.append("</ul>")
+            en_lista = False
+
     while i < len(lineas):
-        ln = lineas[i]
+        linea = lineas[i].rstrip()
 
-        if ln.startswith("```"):                      # bloque de codigo
+        if not linea.strip():
+            cerrar_lista()
             i += 1
-            buf = []
-            while i < len(lineas) and not lineas[i].startswith("```"):
-                buf.append(_html.escape(lineas[i]))
+            continue
+
+        # Bloque de codigo delimitado por vallas. `Story` no respeta
+        # `white-space: pre`, asi que cada linea se emite como su propio div y
+        # la sangria se conserva con espacios duros; de lo contrario el arbol de
+        # directorios se colapsaria en un parrafo corrido.
+        if linea.lstrip().startswith("```"):
+            cerrar_lista()
+            i += 1
+            salida.append('<div class="bloque">')
+            while i < len(lineas) and not lineas[i].lstrip().startswith("```"):
+                cruda = lineas[i].rstrip()
+                # Todos los espacios pasan a duros, no solo la sangria: asi se
+                # conserva tambien la alineacion en columnas del arbol.
+                contenido = _html.escape(cruda).replace(" ", "&nbsp;")
+                salida.append(f"<div>{contenido or '&nbsp;'}</div>")
                 i += 1
-            i += 1
-            salida.append("<pre>" + "<br/>".join(buf) + "</pre>")
+            salida.append("</div>")
+            i += 1                                   # se salta la valla de cierre
             continue
 
-        if ln.startswith("|"):                        # tabla
-            filas = []
-            while i < len(lineas) and lineas[i].startswith("|"):
-                filas.append(lineas[i])
+        # Tabla: una fila de cabecera seguida de la fila de guiones.
+        if linea.startswith("|") and i + 1 < len(lineas) and \
+                re.match(r"^\|[\s:|-]+\|$", lineas[i + 1].strip()):
+            cerrar_lista()
+            cabecera = [c.strip() for c in linea.strip("|").split("|")]
+            salida.append("<table><thead><tr>")
+            salida.extend(f"<th>{_en_linea(c)}</th>" for c in cabecera)
+            salida.append("</tr></thead><tbody>")
+            i += 2
+            while i < len(lineas) and lineas[i].strip().startswith("|"):
+                celdas = [c.strip() for c in lineas[i].strip().strip("|").split("|")]
+                salida.append("<tr>")
+                salida.extend(f"<td>{_en_linea(c)}</td>" for c in celdas)
+                salida.append("</tr>")
                 i += 1
-            def celdas(f):
-                return [c.strip() for c in f.strip().strip("|").split("|")]
-            cab = celdas(filas[0])
-            cuerpo = [celdas(f) for f in filas[2:]]    # [1] es el separador
-            t = ["<table>", "<tr>"]
-            t += [f"<th>{en_linea(c)}</th>" for c in cab]
-            t.append("</tr>")
-            for fila in cuerpo:
-                t.append("<tr>")
-                t += [f"<td>{en_linea(c)}</td>" for c in fila]
-                t.append("</tr>")
-            t.append("</table>")
-            salida.append("".join(t))
+            salida.append("</tbody></table>")
             continue
 
-        if re.match(r"^#{1,3} ", ln):                 # encabezado
-            n = len(ln) - len(ln.lstrip("#"))
-            salida.append(f"<h{n}>{en_linea(ln[n:].strip())}</h{n}>")
+        if linea.startswith("#"):
+            cerrar_lista()
+            nivel = len(linea) - len(linea.lstrip("#"))
+            salida.append(f"<h{nivel}>{_en_linea(linea.lstrip('#').strip())}</h{nivel}>")
             i += 1
             continue
 
-        if ln.strip() == "---":
+        if linea.strip() in ("---", "***", "___"):
+            cerrar_lista()
             salida.append("<hr/>")
             i += 1
             continue
 
-        if re.match(r"^\s*(\d+\.|-) ", ln):           # lista
-            etiqueta = "ol" if re.match(r"^\s*\d+\.", ln) else "ul"
-            items = []
-            while i < len(lineas) and (re.match(r"^\s*(\d+\.|-) ", lineas[i])
-                                       or (lineas[i].startswith("   ")
-                                           and lineas[i].strip() and items)):
-                if re.match(r"^\s*(\d+\.|-) ", lineas[i]):
-                    items.append(re.sub(r"^\s*(\d+\.|-) ", "", lineas[i]))
-                else:
-                    items[-1] += " " + lineas[i].strip()
-                i += 1
-            salida.append(f"<{etiqueta}>"
-                          + "".join(f"<li>{en_linea(x)}</li>" for x in items)
-                          + f"</{etiqueta}>")
-            continue
-
-        if not ln.strip():
+        if re.match(r"^\s*[-*]\s+", linea):
+            if not en_lista:
+                salida.append("<ul>")
+                en_lista = True
+            salida.append(f"<li>{_en_linea(re.sub(r'^\s*[-*]\s+', '', linea))}</li>")
             i += 1
             continue
 
-        parrafo = []                                   # parrafo normal
-        while i < len(lineas) and lineas[i].strip() \
-                and not re.match(r"^(#{1,3} |\||```|---$|\s*(\d+\.|-) )", lineas[i]):
+        # Parrafo: se acumulan las lineas seguidas hasta un blanco.
+        cerrar_lista()
+        parrafo = [linea]
+        i += 1
+        while i < len(lineas) and lineas[i].strip() and \
+                not lineas[i].lstrip().startswith(("#", "|", "-", "*", "```")):
             parrafo.append(lineas[i].strip())
             i += 1
-        salida.append(f"<p>{en_linea(' '.join(parrafo))}</p>")
+        salida.append(f"<p>{_en_linea(' '.join(parrafo))}</p>")
 
-    return "<html><body>" + "".join(salida) + "</body></html>"
+    cerrar_lista()
+    return "\n".join(salida)
 
 
-RAIZ = Path(__file__).resolve().parents[2]
-ENTRADA = RAIZ / "entrega" / "informe_tecnico.md"
-SALIDA = RAIZ / "entrega" / "informe_tecnico.pdf"
+# Hoja de estilo. Sobria a proposito: sin color en los titulos, jerarquia por
+# tamano y peso, y una unica linea de separacion bajo los de primer nivel.
+CSS = """
+body   { font-family: serif; font-size: 9.4pt; line-height: 1.32; color: #000; }
+h1     { font-size: 16pt; margin: 0 0 2pt 0; }
+h2     { font-size: 11pt; margin: 11pt 0 3pt 0;
+         border-bottom: 0.6px solid #000; padding-bottom: 1.5pt; }
+h3     { font-size: 9.8pt; margin: 7pt 0 2pt 0; }
+p      { margin: 0 0 4pt 0; text-align: justify; }
+ul     { margin: 0 0 4pt 0; padding-left: 11pt; }
+li     { margin: 0 0 1.5pt 0; text-align: justify; }
+code   { font-family: monospace; font-size: 8.6pt; }
+div.bloque { font-family: monospace; font-size: 8.1pt; line-height: 1.18;
+             margin: 3pt 0 6pt 0; }
+table  { width: 100%; margin: 3pt 0 6pt 0; border-collapse: collapse;
+         font-size: 8.4pt; }
+th     { text-align: left; font-weight: bold; border-bottom: 0.6px solid #000;
+         padding: 1.5pt 4pt 1.5pt 0; }
+td     { padding: 1.2pt 4pt 1.2pt 0; border-bottom: 0.3px solid #999;
+         vertical-align: top; }
+hr     { margin: 5pt 0; }
+"""
+
+
+def convertir(origen: Path = ORIGEN, destino: Path = DESTINO,
+              maximo: int = MAX_PAGINAS) -> int:
+    """Renderiza el informe y devuelve el numero de paginas."""
+    if not origen.is_file():
+        raise SystemExit(f"No existe {origen}")
+
+    cuerpo = markdown_a_html(origen.read_text(encoding="utf-8"))
+    documento = f"<html><head><style>{CSS}</style></head><body>{cuerpo}</body></html>"
+
+    historia = pymupdf.Story(html=documento)
+    escritor = pymupdf.DocumentWriter(str(destino))
+    hoja = pymupdf.paper_rect("a4")
+    # Margenes de 2 cm a los lados y 1,8 cm arriba y abajo.
+    marco = hoja + (56.7, 51, -56.7, -51)
+
+    paginas = 0
+    quedan = True
+    while quedan:
+        dispositivo = escritor.begin_page(hoja)
+        quedan, _ = historia.place(marco)
+        historia.draw(dispositivo)
+        escritor.end_page()
+        paginas += 1
+        if paginas > 40:                       # freno ante un bucle infinito
+            break
+    escritor.close()
+    return paginas
 
 
 def main() -> int:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    entrada = Path(sys.argv[1]) if len(sys.argv) > 1 else ENTRADA
-    salida = Path(sys.argv[2]) if len(sys.argv) > 2 else SALIDA
-    doc_html = md_a_html(entrada.read_text(encoding="utf-8"))
 
-    story = fitz.Story(html=doc_html, user_css=CSS)
-    escritor = fitz.DocumentWriter(salida)
-    marco = A4 + (MARGEN, MARGEN, -MARGEN, -MARGEN)
-    paginas = 0
-    mas = True
-    while mas:
-        dispositivo = escritor.begin_page(A4)
-        mas, _ = story.place(marco)
-        story.draw(dispositivo)
-        escritor.end_page()
-        paginas += 1
-    escritor.close()
+    paginas = convertir()
+    tamano = DESTINO.stat().st_size
 
-    print(f"{entrada.name} -> {salida.name}")
-    print(f"PAGINAS: {paginas}   (limite de §1.4: 8)")
-    print(f"tamaño : {salida.stat().st_size:,} B")
-    return 0 if paginas <= 8 else 1
+    print(f"origen  : {ORIGEN.relative_to(RAIZ)}")
+    print(f"destino : {DESTINO.relative_to(RAIZ)}  ({tamano:,} bytes)")
+    print(f"paginas : {paginas}   (§1.4 admite un maximo de {MAX_PAGINAS})")
+
+    if "--abrir" in sys.argv:
+        import os
+        os.startfile(DESTINO)                  # noqa: S606
+
+    if paginas > MAX_PAGINAS:
+        print(f"\nFALLA: el informe se pasa en {paginas - MAX_PAGINAS} pagina(s). "
+              f"Hay que recortar el .md y volver a convertir.")
+        return 1
+    print("\nPASA: el informe cabe en el limite de §1.4.")
+    return 0
 
 
 if __name__ == "__main__":

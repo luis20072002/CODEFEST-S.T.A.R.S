@@ -76,6 +76,30 @@ mapbox-vector-tile==2.2.0    # PBF: los 73 mosaicos vectoriales
 # que no roza §8.3. Llamarlo con `datatype="uint32"` (ver `ESTADO.md` §6).
 py3langid==0.3.0
 
+# ── Grafo de conocimiento (§7, BONUS) — solo para reconstruir el grafo ────────
+# 🔴 Estaban SIN DECLARAR hasta el 2026-08-11. `graph/ner.py` no arranca sin
+# `gliner`, y el tokenizador de mDeBERTa (el backbone de GLiNER) es SentencePiece,
+# así que `sentencepiece` tampoco es opcional.
+#
+# ⚠️ NUNCA en `entrega/requirements.txt`: `generador.py` no los necesita y cada
+# dependencia de más es una vía para que la instalación del jurado falle. El
+# grafo se entrega ya construido, como el índice.
+#
+# ⚠️ La pasada de GLiNER **necesita GPU** (1 h 57 min en una T4). Esta sección
+# solo hace falta en la máquina que reconstruye el grafo, no en la del equipo.
+gliner                       # ⚠️ SIN FIJAR: la pasada se corrió en Colab y la
+                             # versión no quedó anotada. Antes de volver a
+                             # construir el grafo, fijarla con la que se use, y
+                             # anotar de paso la revisión del modelo
+                             # (urchade/gliner_multi-v2.1 · 443d26d6…), que sí
+                             # está fijada en `graph/ner.py`.
+sentencepiece==0.2.2         # tokenizador de mDeBERTa; BGE-M3 no lo necesitaba
+                             # porque trae el suyo empaquetado
+
+# ⚠️ `networkx` aparece más abajo entre las transitivas de torch, pero para el
+# grafo es una dependencia DIRECTA: `graph/build.py` lo usa para el MultiDiGraph
+# y para `write_graphml()`. Si algún día se quita torch, no se puede quitar esta.
+
 # ── Transitivas de pdfplumber que conviene fijar ─────────────────────────────
 pdfminer.six==20260107
 pypdfium2==5.12.1
