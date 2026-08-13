@@ -196,18 +196,29 @@ class Chunk:
         `extras=False` deja **solo** los ocho obligatorios. Sirve para
         comprobar que el conjunto mínimo está completo sin que los campos
         opcionales estorben en la revisión.
+
+        QUÉ EXTRAS SE ENTREGAN Y POR QUÉ (decidido el 2026-08-06)
+
+        §3.4 autoriza campos adicionales, pero el `metadata.jsonl` tiene
+        **143.962 líneas**: cada campo extra se paga 143.962 veces. Se conserva
+        **solo `idioma`**, y por una razón concreta: §8.7 contempla filtrar los
+        resultados por idioma, así que es el único opcional con un uso previsto
+        en la recuperación.
+
+        Se quitaron:
+
+        - `titulo` — §3.4 lo nombra como ejemplo válido y ayuda al revisar a
+          ojo, pero no lo consume ninguna etapa. Volver a añadirlo es una línea.
+        - `estrategia`, `nivel_corte`, `unidades` — diagnóstico interno del
+          chunker. Su sitio es `chunks.jsonl`, que sí los conserva y no se
+          entrega. Repetirlos aquí solo engorda el entregable.
         """
         record = {clave_es: getattr(self, campo_en)
                   for campo_en, clave_es in TABLA1_FIELDS.items()}
-        if extras:
-            # Los opcionales van después de los obligatorios y solo si tienen
-            # valor: una clave `idioma: null` en 200.000 líneas es peso muerto.
-            if self.language:
-                record["idioma"] = self.language
-            if self.title:
-                record["titulo"] = self.title
-            if self.metadata:
-                record.update(self.metadata)
+        if extras and self.language:
+            # Solo si tiene valor: una clave `idioma: null` repetida 143.962
+            # veces es peso muerto. Hay 18 documentos sin idioma detectable.
+            record["idioma"] = self.language
         return record
 
     @property

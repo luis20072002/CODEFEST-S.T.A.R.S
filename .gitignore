@@ -6,3 +6,41 @@ TAREAS.md
 __pycache__/
 *.pyc
 ESTADO.MD
+
+# La base vectorial NO cabe en GitHub: index.faiss son ~373 MB y
+# metadata.jsonl ~229 MB, y el limite por archivo son 100 MB.
+# Se entrega por el canal de la competencia, no por el repositorio.
+entrega/base_vectorial/
+
+# Salidas de experimento del generador (--simulado, --bonificacion, etc.).
+# El entregable es `entrega/resultados.jsonl` a secas, y ese SI se rastrea.
+entrega/resultados_*.jsonl
+
+# Temporales de escritura. Los modulos de core/store.py, indexing/metadata.py y
+# el generador escriben a .parcial y renombran; si una corrida se corta, el
+# residuo se queda ahi y no debe commitearse.
+*.parcial
+
+# 🔴 EXCEPCION al `*.pdf` de arriba. Esa regla existe para no subir el corpus
+# (759 PDF en data_raw/), pero atrapaba tambien el informe tecnico, que es
+# entregable OBLIGATORIO de §1.4. Sin esta linea se crea el PDF, git lo ignora
+# en silencio y la entrega sale sin el.
+!entrega/informe_tecnico.pdf
+
+# 🔴 SEGUNDA EXCEPCION, por el mismo motivo. El archivo de consultas vive en
+# `entrega/lib/data/` y lo atrapaban DOS reglas: `data/` de la linea 1 y `*.pdf`
+# de la linea 2. Sin estas tres lineas, quien clone el repositorio no tiene las
+# 50 consultas y `generador.py` no arranca.
+#
+# ⚠️ Las tres hacen falta y en este orden: git no puede readmitir un archivo si
+# su carpeta esta excluida, asi que primero se readmite `lib/`, luego `lib/data/`
+# y por ultimo el PDF.
+!entrega/lib/
+!entrega/lib/data/
+!entrega/lib/data/Extracto_Preguntas_50_v2.pdf
+
+# Paquete con el que volvieron los artefactos de Colab el 2026-08-11. Se
+# conserva en disco como respaldo de `entrega/base_vectorial/`, que no se
+# rastrea; al repositorio no sube (616 MB).
+ADASTRA.zip
+ADASTRA/

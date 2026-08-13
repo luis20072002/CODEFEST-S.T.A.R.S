@@ -33,6 +33,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Iterable, Iterator
 
+from core.chunk import Chunk
 from core.document import Document
 
 
@@ -95,6 +96,59 @@ def read_documents(path: str | Path) -> Iterator[Document]:
             except (json.JSONDecodeError, TypeError, ValueError) as error:
                 # El número de línea es lo único que permite encontrar el
                 # problema en un archivo de miles de líneas.
+                raise StoreError(f"{origen}: línea {numero} inválida: {error}") from error
+
+
+def write_chunks(path: str | Path, chunks: Iterable[Chunk]) -> int:
+    """Escribe los Chunk en un .jsonl y devuelve cuántos escribió.
+
+    Misma mecánica que `write_documents` (temporal + renombrado, UTF-8
+    explícito, `ensure_ascii=False`) y por los mismos motivos, que están
+    explicados en la cabecera de este módulo.
+
+    ⚠️ Este archivo **tampoco es** el `metadata.jsonl` de la entrega. Lleva los
+    fragmentos con los nombres de campo en INGLÉS del pipeline; el de la
+    entrega los lleva en español y lo produce `indexing/metadata.py` llamando a
+    `Chunk.to_metadata_record()`. Son dos archivos distintos con el mismo
+    formato, y confundirlos rompe la Tabla 1.
+    """
+    destino = Path(path)
+    destino.parent.mkdir(parents=True, exist_ok=True)
+    temporal = destino.with_suffix(destino.suffix + ".parcial")
+
+    n = 0
+    try:
+        with open(temporal, "w", encoding="utf-8", newline="\n") as f:
+            for fragmento in chunks:
+                f.write(json.dumps(asdict(fragmento), ensure_ascii=False))
+                f.write("\n")
+                n += 1
+    except OSError as error:
+        raise StoreError(f"No se pudo escribir {destino}: {error}") from error
+
+    temporal.replace(destino)
+    return n
+
+
+def read_chunks(path: str | Path) -> Iterator[Chunk]:
+    """Lee un .jsonl de fragmentos y va devolviendo Chunk, uno a uno.
+
+    Igual que `read_documents`, reconstruye objetos de verdad, así que se
+    revalida el `__post_init__` de `Chunk`: un `position` negativo o un
+    `num_tokens` en 0 saltan aquí y no al construir el índice.
+    """
+    origen = Path(path)
+    if not origen.is_file():
+        raise StoreError(f"No existe el archivo de fragmentos: {origen}")
+
+    with open(origen, encoding="utf-8") as f:
+        for numero, linea in enumerate(f, start=1):
+            linea = linea.strip()
+            if not linea:
+                continue
+            try:
+                yield Chunk(**json.loads(linea))
+            except (json.JSONDecodeError, TypeError, ValueError) as error:
                 raise StoreError(f"{origen}: línea {numero} inválida: {error}") from error
 
 

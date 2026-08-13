@@ -1,0 +1,49 @@
+{
+  "generado": "2026-08-09T15:45:11+00:00",
+  "simulado": false,
+  "segundos": 33.6,
+  "entorno": {
+    "python": "3.12.13",
+    "plataforma": "Linux-6.6.122+-x86_64-with-glibc2.35",
+    "faiss-cpu": "1.15.0",
+    "sentence-transformers": "5.6.0",
+    "torch": "2.11.0+cpu",
+    "transformers": "5.13.1",
+    "numpy": "2.0.2",
+    "pypdf": "6.15.0"
+  },
+  "encoder": {
+    "modelo": "BAAI/bge-m3",
+    "revision": "5617a9f61b028005a4858fdac845db406aefb181"
+  },
+  "configuracion": {
+    "bonificacion_fenomeno": 1.03,
+    "factor_idioma": 0.97,
+    "max_por_documento": 2,
+    "k_candidatos": 200,
+    "n_documentos": 3,
+    "n_fragmentos": 10,
+    "limite_palabras": 250
+  },
+  "consultas": {
+    "archivo": "Extracto_Preguntas_50_v2.pdf",
+    "n": 50
+  },
+  "indice": {
+    "archivo": "entrega/base_vectorial/encoder_bge-m3/index.faiss",
+    "bytes": 372822061,
+    "vectores": 91021,
+    "sha256": "3b8ec63e3e218e0532e87d8f069045184580737560023f0c5c3119d5456def0a"
+  },
+  "metadata": {
+    "archivo": "entrega/base_vectorial/encoder_bge-m3/metadata.jsonl",
+    "bytes": 240054195,
+    "lineas": 91021
+  },
+  "salida": {
+    "archivo": "resultados.jsonl",
+    "bytes": 801865,
+    "lineas": 50,
+    "sha256": "1ec6f8200bd70575243e3259b0cd933966ec976905994c5d5d9ac79edabccb70"
+  }
+}
