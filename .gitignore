@@ -27,6 +27,18 @@ entrega/resultados_*.jsonl
 # en silencio y la entrega sale sin el.
 !entrega/informe_tecnico.pdf
 
+# 🔴 SEGUNDA EXCEPCION, por el mismo motivo. El archivo de consultas vive en
+# `entrega/lib/data/` y lo atrapaban DOS reglas: `data/` de la linea 1 y `*.pdf`
+# de la linea 2. Sin estas tres lineas, quien clone el repositorio no tiene las
+# 50 consultas y `generador.py` no arranca.
+#
+# ⚠️ Las tres hacen falta y en este orden: git no puede readmitir un archivo si
+# su carpeta esta excluida, asi que primero se readmite `lib/`, luego `lib/data/`
+# y por ultimo el PDF.
+!entrega/lib/
+!entrega/lib/data/
+!entrega/lib/data/Extracto_Preguntas_50_v2.pdf
+
 # Paquete con el que volvieron los artefactos de Colab el 2026-08-11. Se
 # conserva en disco como respaldo de `entrega/base_vectorial/`, que no se
 # rastrea; al repositorio no sube (616 MB).

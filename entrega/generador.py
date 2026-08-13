@@ -75,10 +75,9 @@ sys.path.insert(0, str(_LIB if _LIB.is_dir() else RAIZ / "src"))
 from retrieval.consultas import (CONSULTAS, cargar_consultas,  # noqa: E402
                                  fenomeno_de_consulta)
 from retrieval.fragmentos import LIMITE_PALABRAS  # noqa: E402
-from retrieval.search import (BONIFICACION_FENOMENO, BONIFICACION_GRAFO,  # noqa: E402
-                              FACTOR_IDIOMA_OTROS, INDICE, K_CANDIDATOS,
-                              MAX_POR_DOCUMENTO, METADATA, N_DOCUMENTOS,
-                              N_FRAGMENTOS, Buscador)
+from retrieval.search import (BONIFICACION_FENOMENO, FACTOR_IDIOMA_OTROS,  # noqa: E402
+                              INDICE, K_CANDIDATOS, MAX_POR_DOCUMENTO,
+                              METADATA, N_DOCUMENTOS, N_FRAGMENTOS, Buscador)
 
 SALIDA = AQUI / "resultados.jsonl"
 
@@ -138,7 +137,7 @@ def configuracion_actual(args) -> dict:
     salida o el nivel de verbosidad no van aquí: harían que `--comprobar`
     reportara un desajuste donde no hay ninguno.
     """
-    configuracion = {
+    return {
         "bonificacion_fenomeno": args.bonificacion,
         "factor_idioma": args.factor_idioma,
         "max_por_documento": args.max_por_documento,
@@ -147,12 +146,6 @@ def configuracion_actual(args) -> dict:
         "n_fragmentos": N_FRAGMENTOS,
         "limite_palabras": LIMITE_PALABRAS,
     }
-    # La integración del grafo (§8.5) solo se registra cuando está activa. Así,
-    # una salida producida sin ella sigue siendo comprobable contra un código
-    # que tampoco la usa, sin que aparezca una diferencia donde no la hay.
-    if args.bonificacion_grafo:
-        configuracion["bonificacion_grafo"] = args.bonificacion_grafo
-    return configuracion
 
 
 def escribir_manifiesto(args, ntotal: int, escritas: int, simulado: bool,
@@ -332,8 +325,7 @@ def comprobar(args) -> int:
 
 def generar(consultas, buscador, modelo=None, max_por_documento=MAX_POR_DOCUMENTO,
             bonificacion=BONIFICACION_FENOMENO,
-            factor_idioma=FACTOR_IDIOMA_OTROS, vectores=None,
-            bonificacion_grafo=BONIFICACION_GRAFO):
+            factor_idioma=FACTOR_IDIOMA_OTROS, vectores=None):
     """Produce un objeto de resultado por consulta, en orden.
 
     Tres formas de obtener el vector de la consulta, en orden de preferencia:
@@ -381,8 +373,7 @@ def generar(consultas, buscador, modelo=None, max_por_documento=MAX_POR_DOCUMENT
         fenomeno = fenomeno_de_consulta(query_id) if bonificacion != 1.0 else None
         comun = dict(query_id=query_id, max_por_documento=max_por_documento,
                      fenomeno=fenomeno, bonificacion=bonificacion,
-                     factor_idioma=factor_idioma,
-                     bonificacion_grafo=bonificacion_grafo)
+                     factor_idioma=factor_idioma)
         if modelo is not None:
             resultado = buscador.buscar_texto(texto, modelo, **comun)
         elif vectores is not None:
@@ -462,9 +453,6 @@ def main() -> int:
     parser.add_argument("--factor-idioma", type=float, default=FACTOR_IDIOMA_OTROS,
                         help="factor <1.0 que penaliza los fragmentos fuera de "
                              "es/en, conforme a §8.7 (1.0 = desactivado)")
-    parser.add_argument("--bonificacion-grafo", type=float, default=BONIFICACION_GRAFO,
-                        help="tope de la bonificacion por evidencia del grafo de "
-                             "conocimiento, conforme a §8.5 (0 = desactivada)")
     parser.add_argument("--vectores", type=Path, default=None,
                         help="matriz .npy con las consultas ya codificadas por el "
                              "mismo modelo y revisión, para regenerar la salida "
@@ -504,16 +492,8 @@ def main() -> int:
         # que el script siga sirviendo ante otro conjunto de consultas.
         print(f"AVISO: §9.3 espera 50 consultas y se han leído {len(consultas)}.")
 
-    grafo = None
-    if args.bonificacion_grafo:
-        from retrieval.grafo import Grafo
-
-        grafo = Grafo()
-        print(f"grafo     : {len(grafo):,} nodos  ·  bonificacion "
-              f"maxima +{100 * args.bonificacion_grafo:.0f}%  (§8.5)")
-
     print("cargando índice y metadata…")
-    buscador = Buscador(args.indice, args.metadata, grafo=grafo)
+    buscador = Buscador(args.indice, args.metadata)
     print(f"índice    : {buscador.indice.ntotal:,} vectores")
 
     modelo = vectores = None
@@ -536,8 +516,7 @@ def main() -> int:
     with open(temporal, "w", encoding="utf-8", newline="\n") as f:
         for resultado in generar(consultas, buscador, modelo,
                                  args.max_por_documento, args.bonificacion,
-                                 args.factor_idioma, vectores,
-                                 args.bonificacion_grafo):
+                                 args.factor_idioma, vectores):
             f.write(json.dumps(resultado.to_json(), ensure_ascii=False))
             f.write("\n")
             escritas += 1
