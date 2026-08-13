@@ -1,0 +1,38 @@
+# Finales de linea — NO TOCAR SIN LEER ESTO
+#
+# `core.autocrlf` esta en `true` en esta maquina y no habia .gitattributes, asi
+# que git convertia LF -> CRLF al hacer checkout. El 2026-08-11 se descubrio que
+# `entrega/resultados.jsonl` habia quedado con CRLF: 801.915 bytes y
+# sha256 fa05aa21..., en vez de los 801.865 bytes y sha256 1ec6f820... que
+# declara `entrega/resultados.manifest.json` y que se verificaron en dos
+# sesiones independientes de Colab.
+#
+# Son exactamente 50 bytes de mas — un \r por cada una de las 50 lineas.
+#
+# 🔴 Por que importa: §1.4 excluye la entrega si `generador.py` no reproduce el
+# resultado. `generador.py` escribe con LF, asi que el archivo del repositorio
+# no coincidia byte a byte con el que produce el codigo. Ninguna prueba lo veia:
+# `verificar_resultados` valida estructura (50 lineas, 3 documentos, 10
+# fragmentos, 250 palabras), no bytes, y json.loads() acepta el \r sin quejarse.
+#
+# Es la leccion n.º 10 otra vez: si el entregable lo va a consumir otra
+# herramienta, hay que comprobarlo como esa herramienta lo lee.
+
+# Los entregables se guardan y se comparan byte a byte: nunca se normalizan.
+*.jsonl  -text
+*.json   -text
+*.graphml -text
+entrega/requirements.txt -text
+
+# El codigo de la entrega se sirve con LF, igual que se escribio. Sin esto,
+# `core.autocrlf` lo convertia a CRLF al hacer checkout y `entrega/generador.py`
+# acababa con finales de linea mezclados.
+entrega/generador.py text eol=lf
+entrega/lib/**/*.py  text eol=lf
+
+# Binarios, explicitos para que git no intente adivinar.
+*.faiss  binary
+*.npy    binary
+*.pdf    binary
+*.xlsx   binary
+*.pbf    binary

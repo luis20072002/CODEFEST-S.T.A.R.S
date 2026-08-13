@@ -1,52 +1,53 @@
 """Generador de `resultados.jsonl` — entregable 4 de §1.4.
 
-    pip install -r requirements.txt     # 9 paquetes; NO hace falta Tesseract
-    python generador.py                 # la corrida real (necesita el encoder)
+    pip install -r requirements.txt     # 9 paquetes; no requiere Tesseract
+    python generador.py                 # ejecución real (necesita el encoder)
     python generador.py --comprobar     # ¿reproduce la salida ya escrita? (§1.4)
-    python generador.py --simulado      # prueba de formato SIN el modelo
     python generador.py --consultas otro.pdf --salida otro.jsonl
 
 ────────────────────────────────────────────────────────────────────────────────
-QUÉ ES ESTE ARCHIVO Y POR QUÉ IMPORTA MÁS QUE NINGÚN OTRO
+QUÉ ES ESTE ARCHIVO
 
 §1.4 lo define como un «Script Python que utilice el índice, lea el archivo de
-consultas y genere el archivo de resultados», y añade la frase que gobierna todo
-el proyecto:
+consultas y genere el archivo de resultados», y añade la condición que gobierna
+toda la entrega: «El objetivo es reproducir los resultados. Si no es posible
+reproducir los resultados, se excluirá de la evaluación».
 
-    **si `generador.py` no reproduce los resultados, la entrega se excluye de
-    la evaluación.**
+De ahí las tres propiedades que este archivo garantiza:
 
-De ahí salen las tres reglas que este archivo respeta:
+1. **No importa ninguna dependencia de extracción.** Solo el índice, el almacén
+   de metadata, el encoder y el archivo de consultas. Importar un extractor
+   arrastraría bibliotecas de lectura de PDF y de OCR al entorno de evaluación
+   sin necesidad alguna, y un fallo de instalación de cualquiera de ellas
+   impediría ejecutar el generador.
+   La fragmentación sí se importa, de forma indirecta a través de
+   `retrieval.fragmentos`, porque solo usa la biblioteca estándar y evita
+   duplicar el divisor de oraciones que §9.2.1 requiere.
 
-1. **No importa ningún loader ni el orquestador.** Solo el índice, el
-   `metadata.jsonl`, el encoder y el archivo de consultas. Si importara un
-   loader arrastraría `pdfplumber` y `pytesseract` a la máquina del jurado sin
-   ninguna necesidad, y un fallo de esas dependencias tumbaría la entrega.
-   *(Sí importa el chunker, indirectamente, a través de `retrieval.fragmentos`:
-   solo usa `re` y la librería estándar, y evita duplicar el cortador de
-   oraciones que §9.2.1 necesita. Ver `ESTADO.md` §8.)*
+2. **La revisión del modelo está fijada por sha de commit.** Sin ello podría
+   descargarse otra versión del encoder, los vectores de la consulta dejarían de
+   residir en el espacio del índice y el ranking cambiaría sin emitir ningún
+   error.
 
-2. **La revisión del modelo está fijada.** `embedding/encoder.py` carga
-   `BAAI/bge-m3` con el sha del commit. Sin eso, el jurado podría descargar otra
-   versión, los vectores de la consulta dejarían de vivir en el espacio del
-   índice y **el ranking cambiaría en silencio**. Es el riesgo real de §1.4.
-
-3. **Todo empate se rompe de forma determinista**, por `chunk_id`. Con
-   `IndexFlatIP` la búsqueda es exacta, así que los empates de puntuación son el
-   único punto de variación entre corridas.
+3. **Los empates de puntuación se resuelven de forma determinista**, por
+   `chunk_id`. Con `IndexFlatIP` la búsqueda es exacta, de modo que los empates
+   son el único punto de variación posible entre ejecuciones.
 
 ────────────────────────────────────────────────────────────────────────────────
-QUÉ NECESITA PARA CORRER
+QUÉ NECESITA PARA EJECUTARSE
 
-    entrega/base_vectorial/encoder_bge-m3/index.faiss
-    entrega/base_vectorial/encoder_bge-m3/metadata.jsonl
-    src/data/Extracto_Preguntas_50_v2.pdf     (o el archivo que se le pase)
+Todo está dentro de este directorio de entrega:
 
-y `pip install sentence-transformers faiss-cpu pypdf`. **`faiss-cpu`, no
-`faiss-gpu`**: esto se ejecuta en la máquina del jurado y puede no haber GPU.
+    base_vectorial/encoder_bge-m3/index.faiss
+    base_vectorial/encoder_bge-m3/metadata.jsonl
+    lib/                                  módulos de recuperación
+    lib/data/Extracto_Preguntas_50_v2.pdf archivo de consultas
 
-La primera vez descarga el modelo (4,35 GB) de HuggingFace. Codificar 50
-consultas en CPU son unos 8 minutos; en GPU, segundos.
+y `pip install -r requirements.txt`. Se declara **`faiss-cpu`, no `faiss-gpu`**:
+la ejecución en CPU es suficiente una vez construido el índice.
+
+La primera vez se descarga el modelo (4,35 GB) desde HuggingFace. Codificar las
+50 consultas lleva unos 8 minutos en CPU y segundos en GPU.
 """
 
 import argparse
@@ -58,41 +59,49 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-# El script vive en `entrega/`, fuera de `src/`, así que hay que decirle a
-# Python dónde están los módulos del proyecto. Se hace con una ruta relativa a
-# ESTE archivo, no al directorio desde el que se invoque: así funciona igual se
-# ejecute desde donde se ejecute, que es lo que hará el jurado.
-RAIZ = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(RAIZ / "src"))
+# Dónde están los módulos de recuperación. La ruta se calcula a partir de ESTE
+# archivo y no del directorio desde el que se invoque el script, de modo que
+# funciona igual se ejecute desde donde se ejecute.
+#
+# `lib/` es la biblioteca que acompaña a la entrega y contiene todo lo que este
+# script necesita, de forma que el directorio es autocontenido. La alternativa
+# `../src` existe para poder ejecutarlo desde el repositorio de desarrollo, y se
+# usa solo si `lib/` no está presente.
+AQUI = Path(__file__).resolve().parent          # entrega/
+RAIZ = AQUI.parent                              # raíz del repositorio
+_LIB = AQUI / "lib"
+sys.path.insert(0, str(_LIB if _LIB.is_dir() else RAIZ / "src"))
 
 from retrieval.consultas import (CONSULTAS, cargar_consultas,  # noqa: E402
                                  fenomeno_de_consulta)
 from retrieval.fragmentos import LIMITE_PALABRAS  # noqa: E402
-from retrieval.search import (BONIFICACION_FENOMENO, FACTOR_IDIOMA_OTROS,  # noqa: E402
-                              INDICE, K_CANDIDATOS, MAX_POR_DOCUMENTO,
-                              METADATA, N_DOCUMENTOS, N_FRAGMENTOS, Buscador)
+from retrieval.search import (BONIFICACION_FENOMENO, BONIFICACION_GRAFO,  # noqa: E402
+                              FACTOR_IDIOMA_OTROS, INDICE, K_CANDIDATOS,
+                              MAX_POR_DOCUMENTO, METADATA, N_DOCUMENTOS,
+                              N_FRAGMENTOS, Buscador)
 
-SALIDA = RAIZ / "entrega" / "resultados.jsonl"
+SALIDA = AQUI / "resultados.jsonl"
 
-# El manifiesto va junto a la salida, con extensión `.json` y NO `.jsonl`, a
-# propósito: si un script de evaluación busca `*.jsonl` en esta carpeta, no debe
-# recogerlo por error.
+# El manifiesto se sitúa junto a la salida, con extensión `.json` y no `.jsonl`
+# de forma deliberada: si un script de evaluación recorre los `*.jsonl` de esta
+# carpeta, no debe recogerlo por error.
 MANIFIESTO = SALIDA.with_name("resultados.manifest.json")
 
 
-# ── Trazabilidad de la corrida (§1.4) ────────────────────────────────────────
+# ── Trazabilidad de la ejecución (§1.4) ──────────────────────────────────────
 #
-# 🔴 POR QUÉ EXISTE ESTO. Durante dos días el `resultados.jsonl` entregado se
-# había generado con bonificación **1.0** mientras el código decía **1.03**. Los
-# dos archivos eran válidos, las seis pruebas del validador pasaban, y aun así
-# la entrega estaba **excluida** por §1.4, porque `generador.py` no reproducía
-# esa salida. Nada en el repositorio lo delataba: la configuración con la que se
-# produjo un `resultados.jsonl` no quedaba escrita en ninguna parte.
+# POR QUÉ EXISTE EL MANIFIESTO. Un `resultados.jsonl` válido y un código válido
+# pueden no corresponderse entre sí: basta con que la salida se haya generado
+# con una configuración de recuperación distinta de la que el código tiene en
+# ese momento. Las pruebas de formato siguen pasando y, sin embargo, la entrega
+# incumple §1.4, porque `generador.py` no reproduce esa salida. Nada en los
+# archivos lo delata, porque la configuración con que se produjo un resultado no
+# queda registrada en ninguna parte.
 #
-# El manifiesto cierra ese agujero. Registra la configuración, las versiones y
-# los hashes, y `--comprobar` los contrasta contra el código actual sin
-# necesidad del modelo. Es la diferencia entre descubrir el desajuste en un
-# segundo y descubrirlo cuando ya no se puede corregir.
+# El manifiesto cierra ese hueco: registra la configuración de recuperación, las
+# versiones de las bibliotecas, el modelo con su revisión y las sumas SHA-256
+# del índice y de la salida. El modo `--comprobar` los contrasta con el código
+# en ejecución en segundos y sin necesidad de descargar el modelo.
 
 def sha256_de(ruta: Path, trozo: int = 1 << 20) -> str:
     """SHA-256 de un archivo, leído por trozos de 1 MiB.
@@ -129,7 +138,7 @@ def configuracion_actual(args) -> dict:
     salida o el nivel de verbosidad no van aquí: harían que `--comprobar`
     reportara un desajuste donde no hay ninguno.
     """
-    return {
+    configuracion = {
         "bonificacion_fenomeno": args.bonificacion,
         "factor_idioma": args.factor_idioma,
         "max_por_documento": args.max_por_documento,
@@ -138,6 +147,12 @@ def configuracion_actual(args) -> dict:
         "n_fragmentos": N_FRAGMENTOS,
         "limite_palabras": LIMITE_PALABRAS,
     }
+    # La integración del grafo (§8.5) solo se registra cuando está activa. Así,
+    # una salida producida sin ella sigue siendo comprobable contra un código
+    # que tampoco la usa, sin que aparezca una diferencia donde no la hay.
+    if args.bonificacion_grafo:
+        configuracion["bonificacion_grafo"] = args.bonificacion_grafo
+    return configuracion
 
 
 def escribir_manifiesto(args, ntotal: int, escritas: int, simulado: bool,
@@ -317,50 +332,48 @@ def comprobar(args) -> int:
 
 def generar(consultas, buscador, modelo=None, max_por_documento=MAX_POR_DOCUMENTO,
             bonificacion=BONIFICACION_FENOMENO,
-            factor_idioma=FACTOR_IDIOMA_OTROS, vectores=None):
+            factor_idioma=FACTOR_IDIOMA_OTROS, vectores=None,
+            bonificacion_grafo=BONIFICACION_GRAFO):
     """Produce un objeto de resultado por consulta, en orden.
 
     Tres formas de obtener el vector de la consulta, en orden de preferencia:
 
     1. **`modelo`** — se codifica la consulta. Es el camino normal y el que
        ejecuta quien reproduce la entrega.
-    2. **`vectores`** — matriz `(n_consultas × dim)` ya codificada con el MISMO
-       modelo y la MISMA revisión. Permite regenerar la salida en una máquina sin
-       los 4,35 GB del modelo: 200 KB de vectores en lugar de 4,35 GB de pesos.
-       La procedencia se comprueba antes de usarla —modelo, revisión, ids de las
-       consultas y normas— porque mezclar dos espacios vectoriales no daría
-       ningún error y produciría un ranking sin sentido.
+    2. **`vectores`** — matriz `(n_consultas × dim)` ya codificada con el mismo
+       modelo y la misma revisión. Permite regenerar la salida en una máquina
+       sin los 4,35 GB del modelo. La procedencia se verifica antes de usarla
+       —modelo, revisión, identificadores de las consultas y normas— porque
+       mezclar dos espacios vectoriales no produciría ningún error y daría un
+       ranking sin sentido.
 
-       🔴 **NO produce una salida idéntica a la del camino 1, y este docstring
-       afirmaba lo contrario.** Medido el 2026-08-08 contra la salida generada
-       con el modelo: **4 de 50 consultas difieren** (`q020`, `q023`, `q024`,
-       `q028`), y en las dos que cambian a nivel documento el **conjunto es el
-       mismo** — solo cambia el orden, que §10.2.2 no considera para F1@3.
+       Esta vía **no produce una salida idéntica** a la del camino 1, y por eso
+       no se emplea para generar el entregable. Medido contra la salida generada
+       con el modelo, 4 de las 50 consultas difieren; en las dos que cambian a
+       nivel de documento el conjunto es el mismo y solo varía el orden, que
+       §10.2.2 no considera para F1@3.
 
-       La causa está medida: esas cuatro consultas tienen **empates prácticos**
-       en su top-12, con márgenes de 0,00, 6,1e-08, 2,5e-07 y 4,2e-06. Es ruido
-       de float32 por el relleno de los lotes: `sentence-transformers` agrupa por
-       longitud, así que codificar una consulta sola no da exactamente el mismo
-       vector que codificarla dentro de un lote de 50 (`ESTADO.md` §14 lo midió
-       en los embeddings del corpus). El desempate por `chunk_id` **no cubre
-       esto**: solo actúa sobre empates exactos, y un margen de 1e-08 no es un
-       empate exacto.
+       La causa está identificada: esas cuatro consultas presentan empates
+       prácticos en su top-12, con márgenes de 0,00, 6,1e-08, 2,5e-07 y 4,2e-06.
+       Es ruido de coma flotante debido al relleno de los lotes: la biblioteca
+       agrupa los textos por longitud, de modo que codificar una consulta
+       aislada no produce exactamente el mismo vector que codificarla dentro de
+       un lote de cincuenta. El desempate por `chunk_id` no cubre este caso,
+       porque solo actúa sobre empates exactos.
 
-       ⚠️ **Consecuencia práctica: el `resultados.jsonl` que se entrega debe
-       generarse por el camino 1**, que es el que ejecutará quien reproduzca la
-       entrega. Este camino sirve para experimentar y comparar configuraciones,
-       no para producir el entregable.
-    3. **Ninguno de los dos** — modo simulado: se usa un vector del propio
-       índice. No sirve para evaluar nada —los resultados no tienen relación con
-       la consulta— pero permite comprobar que el formato cumple §9.3.1.
+       Consecuencia: el `resultados.jsonl` entregado se genera por el camino 1,
+       que es el que ejecuta quien reproduce la entrega. Esta vía sirve para
+       comparar configuraciones.
+    3. **Ninguno de los dos** — modo simulado: se emplea un vector del propio
+       índice. No sirve para evaluar nada, puesto que los resultados no guardan
+       relación con la consulta, pero permite comprobar que el formato cumple
+       §9.3.1 sin descargar el modelo.
 
-    `bonificacion > 1.0` empuja hacia el fenómeno de la consulta. El fenómeno
-    sale de `fenomeno_de_consulta()`, que es una correspondencia **verificada a
-    mano** sobre el archivo de ADL, no un campo del archivo.
+    `bonificacion > 1.0` desplaza la puntuación hacia el fenómeno de la
+    consulta. El fenómeno procede de `fenomeno_de_consulta()`, que es una
+    correspondencia verificada consulta a consulta y no un campo del archivo.
 
-    `factor_idioma < 1.0` penaliza los fragmentos fuera de {es, en} (§8.7). Va
-    en 1.0 —desactivado— hasta que esté medido; ver `retrieval.search
-    .aplicar_factor_idioma()` y `tools/barrer_factor_idioma.py`.
+    `factor_idioma < 1.0` penaliza los fragmentos fuera de {es, en} (§8.7).
     """
     import numpy as np
 
@@ -368,7 +381,8 @@ def generar(consultas, buscador, modelo=None, max_por_documento=MAX_POR_DOCUMENT
         fenomeno = fenomeno_de_consulta(query_id) if bonificacion != 1.0 else None
         comun = dict(query_id=query_id, max_por_documento=max_por_documento,
                      fenomeno=fenomeno, bonificacion=bonificacion,
-                     factor_idioma=factor_idioma)
+                     factor_idioma=factor_idioma,
+                     bonificacion_grafo=bonificacion_grafo)
         if modelo is not None:
             resultado = buscador.buscar_texto(texto, modelo, **comun)
         elif vectores is not None:
@@ -447,12 +461,14 @@ def main() -> int:
                              "consulta (1.0 = desactivada; útil entre 1.02 y 1.05)")
     parser.add_argument("--factor-idioma", type=float, default=FACTOR_IDIOMA_OTROS,
                         help="factor <1.0 que penaliza los fragmentos fuera de "
-                             "es/en (1.0 = desactivado). Elegirlo con "
-                             "tools/barrer_factor_idioma.py, no a ojo")
+                             "es/en, conforme a §8.7 (1.0 = desactivado)")
+    parser.add_argument("--bonificacion-grafo", type=float, default=BONIFICACION_GRAFO,
+                        help="tope de la bonificacion por evidencia del grafo de "
+                             "conocimiento, conforme a §8.5 (0 = desactivada)")
     parser.add_argument("--vectores", type=Path, default=None,
-                        help="matriz .npy con las consultas YA codificadas por el "
-                             "mismo modelo y revisión. Produce una salida idéntica "
-                             "a la del camino normal sin descargar los 4,35 GB")
+                        help="matriz .npy con las consultas ya codificadas por el "
+                             "mismo modelo y revisión, para regenerar la salida "
+                             "sin descargar los 4,35 GB del modelo")
     parser.add_argument("--simulado", action="store_true",
                         help="NO codifica: prueba de formato sin el modelo")
     parser.add_argument("--comprobar", action="store_true",
@@ -478,21 +494,26 @@ def main() -> int:
     consultas = cargar_consultas(args.consultas)
     print(f"consultas : {len(consultas)} de {args.consultas.name}")
     if args.bonificacion != 1.0:
-        print(f"⚠️  bonificación por fenómeno ACTIVADA: ×{args.bonificacion}")
-        print("    Depende del reparto q001–q016→F1, q017–q032→F2, q033–q050→F3,")
-        print("    verificado a mano sobre el archivo de ADL. Ver ESTADO.md §5.")
+        print(f"bonificación por fenómeno : ×{args.bonificacion}")
+        print("   reparto q001–q016→F1, q017–q032→F2, q033–q050→F3")
     if args.factor_idioma != 1.0:
-        print(f"⚠️  factor por idioma ACTIVADO: ×{args.factor_idioma} "
-              f"fuera de {{es, en}}")
-        print("    Si este valor no coincide con el que produjo el resultados.jsonl")
-        print("    entregado, §1.4 excluye la entrega. Ver ESTADO.md §17.")
+        print(f"factor por idioma         : ×{args.factor_idioma} "
+              f"fuera de {{es, en}}  (§8.7)")
     if len(consultas) != 50:
-        # §9.3 exige exactamente 50 líneas. Avisar, no fallar: si ADL entrega
-        # otro conjunto, el script debe seguir sirviendo.
-        print(f"⚠️  §9.3 espera 50 consultas y se han leído {len(consultas)}.")
+        # §9.3 exige exactamente 50 líneas. Se avisa en lugar de fallar, para
+        # que el script siga sirviendo ante otro conjunto de consultas.
+        print(f"AVISO: §9.3 espera 50 consultas y se han leído {len(consultas)}.")
+
+    grafo = None
+    if args.bonificacion_grafo:
+        from retrieval.grafo import Grafo
+
+        grafo = Grafo()
+        print(f"grafo     : {len(grafo):,} nodos  ·  bonificacion "
+              f"maxima +{100 * args.bonificacion_grafo:.0f}%  (§8.5)")
 
     print("cargando índice y metadata…")
-    buscador = Buscador(args.indice, args.metadata)
+    buscador = Buscador(args.indice, args.metadata, grafo=grafo)
     print(f"índice    : {buscador.indice.ntotal:,} vectores")
 
     modelo = vectores = None
@@ -515,7 +536,8 @@ def main() -> int:
     with open(temporal, "w", encoding="utf-8", newline="\n") as f:
         for resultado in generar(consultas, buscador, modelo,
                                  args.max_por_documento, args.bonificacion,
-                                 args.factor_idioma, vectores):
+                                 args.factor_idioma, vectores,
+                                 args.bonificacion_grafo):
             f.write(json.dumps(resultado.to_json(), ensure_ascii=False))
             f.write("\n")
             escritas += 1
@@ -530,14 +552,13 @@ def main() -> int:
     print(f"\nescritas {escritas} líneas en {args.salida}")
     print(f"tiempo   : {segundos:,.1f} s")
 
-    # El manifiesto se escribe SIEMPRE, incluido en modo simulado —ahí queda
+    # El manifiesto se escribe siempre, incluido el modo simulado —donde queda
     # marcado como tal—, porque una salida sin registro de cómo se produjo es
-    # justo el estado que dejó la entrega excluida durante dos días.
+    # precisamente lo que impide demostrar la reproducibilidad que exige §1.4.
     escribir_manifiesto(args, ntotal, escritas, args.simulado, segundos)
 
-    print("\nSiguiente:")
-    print("  python generador.py --comprobar        # reproducibilidad (§1.4)")
-    print("  py -m tools.verificar_resultados       # esquema (§9.3.1), desde src/")
+    print("\nPara verificar la reproducibilidad (§1.4):")
+    print("  python generador.py --comprobar")
     return 0
 
 
