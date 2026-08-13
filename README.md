@@ -21,16 +21,16 @@ La entrega se reparte en dos ubicaciones **por una única razón técnica**: `in
 (372,8 MB) y `metadata.jsonl` (240,1 MB) superan el límite de 100 MB por archivo que impone
 GitHub, de modo que no pueden alojarse en el repositorio.
 
-### 📁 Carpeta compartida — la entrega completa, con el árbol de §1.4 íntegro
+###  Carpeta compartida — la entrega completa, con el árbol de §1.4 íntegro
 
-### ➡️ [**Abrir la carpeta compartida con la entrega completa**](https://tecnoutb-my.sharepoint.com/:f:/g/personal/luiangulo_utb_edu_co/IgCeTmlebbmlR4nVOBW2QI9tAUSLjTZHMSBbiFMkykK7zoQ?e=5KsHor)
+###  [**Abrir la carpeta compartida con la entrega completa**](https://tecnoutb-my.sharepoint.com/:f:/g/personal/luiangulo_utb_edu_co/IgCeTmlebbmlR4nVOBW2QI9tAUSLjTZHMSBbiFMkykK7zoQ?e=5KsHor)
 
 Contiene la carpeta `entrega/` completa, tal como la especifica §1.4, incluida la base
 vectorial. **Es la ubicación de referencia para evaluar.**
 
 <sub>URL directa: `https://tecnoutb-my.sharepoint.com/:f:/g/personal/luiangulo_utb_edu_co/IgCeTmlebbmlR4nVOBW2QI9tAUSLjTZHMSBbiFMkykK7zoQ?e=5KsHor`</sub>
 
-### 💻 Este repositorio
+###  Este repositorio
 
 Contiene lo mismo **excepto `base_vectorial/`**, más el código de construcción del índice
 (`src/`), que no forma parte de los entregables pero documenta cómo se produjo todo.
