@@ -1,15 +1,15 @@
 {
-  "generado": "2026-08-09T01:44:49+00:00",
-  "simulado": true,
-  "segundos": 10.2,
+  "generado": "2026-08-09T15:45:11+00:00",
+  "simulado": false,
+  "segundos": 33.6,
   "entorno": {
-    "python": "3.13.0",
-    "plataforma": "Windows-11-10.0.26100-SP0",
+    "python": "3.12.13",
+    "plataforma": "Linux-6.6.122+-x86_64-with-glibc2.35",
     "faiss-cpu": "1.15.0",
-    "sentence-transformers": "5.7.0",
-    "torch": "2.13.0",
-    "transformers": "5.14.1",
-    "numpy": "2.5.1",
+    "sentence-transformers": "5.6.0",
+    "torch": "2.11.0+cpu",
+    "transformers": "5.13.1",
+    "numpy": "2.0.2",
     "pypdf": "6.15.0"
   },
   "encoder": {
@@ -18,7 +18,7 @@
   },
   "configuracion": {
     "bonificacion_fenomeno": 1.03,
-    "factor_idioma": 1.0,
+    "factor_idioma": 0.97,
     "max_por_documento": 2,
     "k_candidatos": 200,
     "n_documentos": 3,
@@ -30,20 +30,20 @@
     "n": 50
   },
   "indice": {
-    "archivo": "entrega\\base_vectorial\\encoder_bge-m3\\index.faiss",
+    "archivo": "entrega/base_vectorial/encoder_bge-m3/index.faiss",
     "bytes": 372822061,
     "vectores": 91021,
     "sha256": "3b8ec63e3e218e0532e87d8f069045184580737560023f0c5c3119d5456def0a"
   },
   "metadata": {
-    "archivo": "entrega\\base_vectorial\\encoder_bge-m3\\metadata.jsonl",
+    "archivo": "entrega/base_vectorial/encoder_bge-m3/metadata.jsonl",
     "bytes": 240054195,
     "lineas": 91021
   },
   "salida": {
-    "archivo": "resultados_simulado.jsonl",
-    "bytes": 919822,
+    "archivo": "resultados.jsonl",
+    "bytes": 801865,
     "lineas": 50,
-    "sha256": "9e7c8a1062c451f4279952296f0c00284f07463a152b1d54b823f6cd53af53ec"
+    "sha256": "1ec6f8200bd70575243e3259b0cd933966ec976905994c5d5d9ac79edabccb70"
   }
 }

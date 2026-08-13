@@ -592,7 +592,10 @@ def main() -> int:
 
     if args.demo and args.salida == SALIDA:
         # Que una prueba no pise el entregable, igual que en `generador.py`.
-        args.salida = SALIDA.with_name("grafo_demo.graphml")
+        # Y que tampoco se quede DENTRO de `entrega/`: un grafo de demo en la
+        # carpeta del entregable invita a que se evalúe lo que no es, el mismo
+        # motivo por el que `--nucleo` escribe fuera.
+        args.salida = NUCLEO.with_name("grafo_demo.graphml")
         print("⚠️  MODO DEMO: entidades sintéticas, el grafo NO es el del corpus.")
         print(f"    Salida: {args.salida.name}\n")
 
