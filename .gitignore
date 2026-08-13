@@ -7,10 +7,16 @@ __pycache__/
 *.pyc
 ESTADO.MD
 
-# La base vectorial NO cabe en GitHub: index.faiss son ~373 MB y
-# metadata.jsonl ~229 MB, y el limite por archivo son 100 MB.
-# Se entrega por el canal de la competencia, no por el repositorio.
-entrega/base_vectorial/
+# Los dos archivos del ENCODER no caben en GitHub: index.faiss son ~373 MB y
+# metadata.jsonl ~229 MB, y el limite por archivo son 100 MB. Esos dos se
+# entregan por el canal de la competencia, no por el repositorio.
+#
+# ⚠️ Esta regla excluia antes `entrega/base_vectorial/` ENTERA, y con ella se iba
+# tambien el grafo, que si cabe: `grafo.graphml` son 2,3 MB y `chunk_index.json`
+# 90 KB. El efecto era que el bonus de §7 y el mapa `chunk_id -> faiss_id` que
+# necesita §8.5 vivian solo en SharePoint, sin historial y sin que nada avisara
+# si faltaban. Se acoto al subdirectorio del encoder el 2026-08-13.
+entrega/base_vectorial/encoder_bge-m3/
 
 # Salidas de experimento del generador (--simulado, --bonificacion, etc.).
 # El entregable es `entrega/resultados.jsonl` a secas, y ese SI se rastrea.

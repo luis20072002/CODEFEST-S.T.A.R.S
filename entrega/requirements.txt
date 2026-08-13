@@ -5,8 +5,10 @@
 #     python generador.py
 #     python generador.py --comprobar     # verifica la reproducibilidad (§1.4)
 #
+# Python 3.13.0 (probado también en 3.12, el de Google Colab).
+#
 # ─────────────────────────────────────────────────────────────────────────────
-# POR QUÉ LA LISTA ES CORTA
+# POR QUÉ LA LISTA ES CORTA, Y POR QUÉ ESO ES DELIBERADO
 #
 # §1.4 define `generador.py` como un «Script Python que utilice el índice, lea
 # el archivo de consultas y genere el archivo de resultados». Utiliza el índice
@@ -14,14 +16,23 @@
 # normalización, la fragmentación y la codificación ocurrieron aguas arriba y su
 # resultado está contenido en `base_vectorial/`.
 #
-# En consecuencia, aquí no se requieren bibliotecas de lectura de PDF, de OCR ni
-# de hojas de cálculo, ni el binario de Tesseract. Declararlas ampliaría la
-# superficie de fallo de la instalación sin ninguna contrapartida, y una
-# instalación fallida impide ejecutar el generador.
+# En consecuencia, aquí NO se requieren `pdfplumber`, `PyMuPDF`, `pytesseract`,
+# `openpyxl` ni `mapbox-vector-tile`, ni el binario de Tesseract. Declararlos
+# ampliaría la superficie de fallo de la instalación sin ninguna contrapartida, y
+# una instalación fallida impide ejecutar el generador — que es exactamente lo
+# que §1.4 castiga con la exclusión.
 #
 # Los cuatro primeros paquetes son los únicos imports de terceros de toda la
-# cadena que `generador.py` recorre. Los cinco siguientes son transitivas que se
-# fijan porque determinan los valores numéricos de los embeddings.
+# cadena que `generador.py` recorre. Verificado leyendo los imports de
+# `generador.py`, `lib/retrieval/{consultas,search,fragmentos,grafo}.py`,
+# `lib/embedding/encoder.py`, `lib/chunking/chunker.py`, `lib/graph/canonical.py`
+# y `lib/core/chunk.py`: los tres últimos no importan nada de terceros. Los cinco
+# siguientes son transitivas que se fijan porque determinan los valores numéricos
+# de los embeddings: fijarlas es lo que hace que el ranking sea el mismo y no
+# solo «parecido», que es lo que §1.4 exige.
+#
+# La lista completa que se usó para CONSTRUIR el índice está en el
+# `requirements.txt` de la raíz del repositorio, y no hace falta aquí.
 #
 # ─────────────────────────────────────────────────────────────────────────────
 # EL MODELO SE DESCARGA EN TIEMPO DE EJECUCIÓN
@@ -38,31 +49,52 @@
 #
 # Codificar las 50 consultas lleva unos 8 minutos en CPU y segundos en GPU.
 #
-# Se declara `faiss-cpu` y no `faiss-gpu`: una vez construido el índice, la
-# ejecución en CPU es suficiente, y un índice plano no requiere entrenamiento.
+# Se declara `faiss-cpu` y NUNCA `faiss-gpu`: esto se ejecuta en la máquina de
+# quien evalúa, donde puede no haber GPU, y un índice plano (`IndexFlatIP`) no
+# requiere entrenamiento, así que la GPU no aportaría nada.
+#
+# ⚠️ NO añadir `pathlib`: el paquete `pathlib` de PyPI es un backport antiguo que
+# puede sombrear el `pathlib` de la librería estándar. Estuvo aquí por error.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# LO QUE ADEMÁS DE ESTOS PAQUETES HACE FALTA PARA REPRODUCIR
+#
+# La reproducción no depende solo de pip. Dentro de `base_vectorial/grafo/` tiene
+# que estar `chunk_index.json` junto a `grafo.graphml`: es el mapa
+# `chunk_id → faiss_id` que usa la integración del grafo de §8.5. Sin él el grafo
+# no puede aportar ningún fragmento, `generador.py` lo avisa por pantalla y
+# desactiva §8.5 en lugar de fingir que se aplica — pero la salida ya no
+# coincidiría con la entregada.
 #
 # ─────────────────────────────────────────────────────────────────────────────
 # ENTORNO DE REFERENCIA OBSERVADO
 #
 # El `resultados.jsonl` entregado (801.865 bytes, 50 líneas,
-# sha256 1ec6f8200bd70575243e3259b0cd933966ec976905994c5d5d9ac79edabccb70)
-# se generó en el siguiente entorno, registrado en `resultados.manifest.json`:
+# sha256 3617145844f10f81b3b3bb3214d1e240691c3d954b71fc415ba1298dd3fb44ef)
+# se generó el 2026-08-13 en el siguiente entorno, registrado en
+# `resultados.manifest.json`:
 #
-#     Python 3.12.13 · Linux x86_64 · CPU
-#     faiss-cpu 1.15.0            numpy   2.0.2
-#     sentence-transformers 5.6.0 torch   2.11.0+cpu
-#     transformers 5.13.1         pypdf   6.15.0
+#     Python 3.13.0 · Windows 11 x86_64 · CPU
+#     faiss-cpu 1.15.0            numpy   2.5.1
+#     sentence-transformers 5.7.0 torch   2.13.0
+#     transformers 5.14.1         pypdf   6.15.0
 #
-# La salida se verificó **idéntica byte a byte** en dos sesiones independientes
-# con descarga fresca del modelo y versiones distintas de biblioteca
-# (`sentence-transformers` 5.6.0 y 5.7.0, `numpy` 2.0.2 y 2.5.1), de modo que el
-# resultado no depende de esas versiones concretas dentro del rango probado.
+# Los pines de abajo son exactamente esas versiones, de modo que instalar este
+# archivo reconstruye el entorno observado y no una aproximación.
 #
-# Los pines de abajo corresponden a versiones verificadas e instalables en
-# Python 3.12 y 3.13. Si `--comprobar` advierte de una diferencia de versión
-# respecto al manifiesto, se trata de un aviso informativo: el contraste que
-# determina la reproducibilidad es el del sha256 de la salida y la
-# configuración de recuperación, que el propio comando verifica.
+# Sobre la independencia del entorno: la configuración ANTERIOR a la integración
+# del grafo se verificó idéntica byte a byte en dos sesiones independientes, con
+# descarga fresca del modelo y versiones distintas de biblioteca
+# (`sentence-transformers` 5.6.0 y 5.7.0, `numpy` 2.0.2 y 2.5.1). Esa evidencia
+# es de aquella configuración, no de esta: la salida actual está verificada por
+# hash contra su manifiesto, y §8.5 no introduce ninguna fuente de variación
+# nueva —el enlazado al grafo es por coincidencia literal y determinista—, pero
+# la corrida en un segundo entorno todavía no se ha repetido.
+#
+# Si `--comprobar` advierte de una diferencia de versión respecto al manifiesto,
+# se trata de un aviso informativo: el contraste que determina la
+# reproducibilidad es el del sha256 de la salida y el de la configuración de
+# recuperación, que el propio comando verifica.
 
 # ── Imports directos ─────────────────────────────────────────────────────────
 faiss-cpu==1.15.0
