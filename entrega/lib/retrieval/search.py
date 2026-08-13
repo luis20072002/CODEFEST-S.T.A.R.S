@@ -155,6 +155,21 @@ IDIOMAS_PREFERIDOS = ("es", "en")
 # igual que BONIFICACION_FENOMENO.
 FACTOR_IDIOMA_OTROS = 0.97
 
+# Cuánto puede subir la puntuación de un fragmento respaldado por el grafo (§8.5).
+# Es un tope: un fragmento con evidencia máxima se multiplica por
+# `1 + BONIFICACION_GRAFO`, y uno sin evidencia no se toca. 0.0 desactivaría la
+# integración por completo.
+#
+# El comité aclaró por escrito que el bonus de §7 «para que sea válido lo deben
+# integrar a la recuperación, el solo construirlo no es válido». Medido sobre las
+# 50 consultas cambiando solo esta constante: 0.03 deja 48 de 50 idénticas y
+# mueve 1 de los 150 puestos de documento; 0.10 mueve 5. Se elige el valor más
+# bajo que integra de verdad, porque §8.5 pide que el grafo complemente el
+# ranking denso y no que lo sustituya.
+#
+# Este valor debe coincidir con el que produjo el `resultados.jsonl` entregado,
+# igual que los otros dos ajustes. Compruébalo con `generador.py --comprobar`.
+BONIFICACION_GRAFO = 0.03
 
 
 def aplicar_factor_idioma(
@@ -383,7 +398,8 @@ class AlmacenMetadata:
 class Buscador:
     """Índice FAISS y almacén de metadata, listos para consultar."""
 
-    def __init__(self, indice: Path = INDICE, metadata: Path = METADATA) -> None:
+    def __init__(self, indice: Path = INDICE, metadata: Path = METADATA,
+                 grafo=None) -> None:
         import faiss
 
         self.indice = faiss.read_index(str(indice))
@@ -393,6 +409,73 @@ class Buscador:
                 f"El índice tiene {self.indice.ntotal:,} vectores y la metadata "
                 f"{len(self.metadata):,} líneas. El mapeo de §5.3 estaría roto."
             )
+        # Grafo de conocimiento para la integración de §8.5. Es opcional: sin él
+        # la recuperación es exclusivamente densa y el resto no cambia.
+        self.grafo = grafo
+        self._entidades_cache = {}
+
+    # ── §8.5: integración del grafo de conocimiento ──────────────────────
+
+    def entidades_de_consulta(self, query_id: str,
+                              consulta: Optional[str]) -> list:
+        """Entidades de la consulta, del archivo precalculado o por coincidencia.
+
+        §8.5 paso 1. Si existe `consultas_entidades.json` junto al grafo se usa
+        el reconocimiento hecho aguas arriba con el mismo NER que lo construyó;
+        si no, se cae al enlazado por coincidencia literal, que es determinista y
+        no emplea ningún modelo, de modo que §8.3 queda a salvo en los dos casos.
+        """
+        if not self._entidades_cache:
+            from retrieval.grafo import cargar_entidades_consulta
+
+            self._entidades_cache = cargar_entidades_consulta() or {"__vacio__": []}
+        guardadas = self._entidades_cache.get(query_id)
+        if guardadas:
+            return [tuple(e) for e in guardadas]
+        if consulta:
+            from retrieval.grafo import entidades_por_coincidencia
+
+            return entidades_por_coincidencia(consulta, self.grafo)
+        return []
+
+    def incorporar_grafo(self, vector, candidatos: List[Dict],
+                         evidencia: Dict[str, float],
+                         bonificacion: float) -> List[Dict]:
+        """Añade los fragmentos del grafo al conjunto de candidatos y los puntúa.
+
+        §8.5 pasos 3 y 4. Los fragmentos que el grafo aporta y que la búsqueda
+        densa no había devuelto entran con **su coseno real**: su vector se
+        reconstruye del índice y se multiplica por el de la consulta. No se les
+        asigna una puntuación artificial, de modo que compiten en la misma escala
+        que el resto.
+        """
+        import numpy as np
+
+        presentes = {c["chunk_id"] for c in candidatos}
+        nuevos: List[Dict] = []
+        for cid, peso in evidencia.items():
+            if cid in presentes:
+                continue
+            idx = self.grafo.faiss_id.get(cid)
+            if idx is None:
+                continue
+            registro = self.metadata[idx]
+            reconstruido = np.asarray(self.indice.reconstruct(int(idx)))
+            coseno = float(np.dot(np.asarray(vector, dtype="float32"), reconstruido))
+            nuevos.append({
+                "faiss_id": idx, "score": coseno,
+                "chunk_id": registro["chunk_id"], "doc_id": registro["doc_id"],
+                "text": registro["texto"], "idioma": registro.get("idioma"),
+            })
+
+        ajustados = []
+        for c in list(candidatos) + nuevos:
+            copia = dict(c)
+            peso = evidencia.get(c["chunk_id"])
+            if peso:
+                copia["score"] = c["score"] * (1.0 + bonificacion * peso)
+            ajustados.append(copia)
+        return _ordenar_por_puntuacion(ajustados)
 
     def candidatos(self, vector, k: int = K_CANDIDATOS) -> List[Dict]:
         """Devuelve los k fragmentos más similares, con su puntuación.
@@ -572,6 +655,7 @@ class Buscador:
         fenomeno: Optional[int] = None,
         bonificacion: float = BONIFICACION_FENOMENO,
         factor_idioma: float = FACTOR_IDIOMA_OTROS,
+        bonificacion_grafo: float = BONIFICACION_GRAFO,
     ) -> Resultado:
         """De un vector de consulta a un `Resultado` completo.
 
@@ -584,6 +668,17 @@ class Buscador:
         en que se apliquen no altera el resultado.
         """
         candidatos = self.candidatos_suficientes(vector, k, N_DOCUMENTOS)
+        # §8.5: el grafo aporta candidatos y bonifica los que respalda. Se aplica
+        # ANTES que los otros dos ajustes para que los fragmentos que el grafo
+        # incorpora pasen también por la bonificación de fenómeno y el factor de
+        # idioma, igual que los que vinieron de la búsqueda densa.
+        if self.grafo is not None and bonificacion_grafo:
+            semillas = self.grafo.enlazar(
+                self.entidades_de_consulta(query_id, consulta))
+            evidencia = self.grafo.evidencia(semillas)
+            if evidencia:
+                candidatos = self.incorporar_grafo(
+                    vector, candidatos, evidencia, bonificacion_grafo)
         candidatos = aplicar_bonificacion(candidatos, fenomeno, bonificacion)
         candidatos = aplicar_factor_idioma(candidatos, factor_idioma)
         return Resultado(

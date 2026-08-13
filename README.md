@@ -48,7 +48,7 @@ Contiene lo mismo **excepto `base_vectorial/`**, más el código de construcció
 | **1. Base vectorial**: índice FAISS y almacén de metadata, en subcarpetas por encoder | `entrega/base_vectorial/encoder_bge-m3/` | ✅ carpeta compartida |
 | ├ `index.faiss` serializado con `faiss.write_index()` | `index.faiss` · 372.822.061 B | ✅ |
 | ├ `metadata.jsonl`, un objeto JSON por línea, con los campos de la Tabla 1, en el orden de los identificadores internos de FAISS | `metadata.jsonl` · 91.021 líneas | ✅ |
-| └ Grafo de conocimiento en `grafo/` como `grafo.graphml` | `grafo/grafo.graphml` · 3.375 nodos | ✅ bonus §7 |
+| └ Grafo de conocimiento en `grafo/` como `grafo.graphml` | `grafo/grafo.graphml` · 3.375 nodos · **integrado en la recuperación (§8.5)** | ✅ bonus §7 |
 | **2. Archivo de resultados**, JSON Lines, `resultados.jsonl`, exactamente 50 líneas `q001`–`q050` | `entrega/resultados.jsonl` · 50 líneas | ✅ |
 | **3. Documento técnico** en PDF, máximo 8 páginas | `entrega/informe_tecnico.pdf` · **8 páginas** | ✅ |
 | **4. Script Python** `generador.py` que use el índice, lea las consultas y genere los resultados | `entrega/generador.py` | ✅ |
@@ -64,7 +64,7 @@ entrega/
   informe_tecnico.pdf           documento tecnico, 8 paginas (§1.4)
   informe_tecnico.md            fuente en Markdown del anterior
   lib/                          modulos que consume generador.py
-    retrieval/ chunking/ core/ embedding/
+    retrieval/ chunking/ core/ embedding/ graph/
     data/Extracto_Preguntas_50_v2.pdf     archivo de consultas
   base_vectorial/               ← solo en la carpeta compartida
     encoder_bge-m3/
@@ -72,6 +72,7 @@ entrega/
       metadata.jsonl            Tabla 1 + idioma + faiss_id, 91.021 lineas
     grafo/
       grafo.graphml             bonus §7 · 3.375 nodos, 3.460 aristas
+      chunk_index.json          mapa chunk_id→faiss_id que usa §8.5
 ```
 
 ### Tres aclaraciones para evitar malentendidos
@@ -107,7 +108,7 @@ grandes y una transferencia truncada no siempre avisa):
 |---|---|---|
 | `index.faiss` | 372.822.061 | `3b8ec63e3e218e0532e87d8f069045184580737560023f0c5c3119d5456def0a` |
 | `metadata.jsonl` | 240.054.195 | 91.021 líneas |
-| `resultados.jsonl` | 801.865 | `1ec6f8200bd70575243e3259b0cd933966ec976905994c5d5d9ac79edabccb70` |
+| `resultados.jsonl` | 801.865 | `3617145844f10f81b3b3bb3214d1e240691c3d954b71fc415ba1298dd3fb44ef` |
 
 ### Paso 2 · Instalar las dependencias
 
@@ -205,6 +206,7 @@ python -m tools.informe_a_pdf        # regenera el informe y cuenta las paginas 
 | **Índice** (§5) | `IndexFlatIP` con vectores normalizados, equivalente a coseno exacto |
 | **Recuperación** (§8) | 200 candidatos · agregación por max pooling (§8.6) · bonificación por fenómeno y factor por idioma (§8.7) |
 | **Grafo** (§7, bonus) | 3.375 nodos · 3.460 aristas · NER con `urchade/gliner_multi-v2.1`, Apache 2.0 |
+| **Grafo en la recuperación** (§8.5) | bonificación tope 1,03 · peso de entidad inverso al log del grado · enlazado literal, sin modelo |
 
 **Ninguna etapa emplea modelos generativos.** La extracción y la normalización son
 procesamiento determinista de texto; la representación vectorial procede de un encoder de la

@@ -172,7 +172,22 @@ FACTOR_IDIOMA_OTROS = 0.97
 #
 # ⚠️ Este valor tiene que coincidir con el que produjo el `resultados.jsonl`
 # entregado, igual que los otros dos ajustes.
-BONIFICACION_GRAFO = 0.0
+#
+# 🔴 **Por qué 0.03 y no 0.0** (2026-08-13). El comité aclaró por escrito que el
+# bonus de §7 «para que sea válido lo deben integrar a la recuperación, el solo
+# construirlo no es válido», así que la decisión anterior —entregar el grafo sin
+# integrarlo— dejaba el bonus en nada. Medido con `tools.medir_grafo` sobre las
+# 50 consultas, cambiando solo esta constante:
+#
+#     0.03 → 48 de 50 consultas idénticas ·  1 de 150 puestos de documento
+#     0.05 → 44 de 50                      ·  1 de 150
+#     0.10 → 38 de 50                      ·  5 de 150
+#
+# Se elige el valor más bajo que integra de verdad: §8.5 pide que el grafo
+# complemente el ranking denso, no que lo sustituya, y el riesgo asumido es un
+# único puesto de documento. La magnitud queda del mismo orden que la
+# bonificación por fenómeno (1.03), a propósito.
+BONIFICACION_GRAFO = 0.03
 
 
 def aplicar_factor_idioma(

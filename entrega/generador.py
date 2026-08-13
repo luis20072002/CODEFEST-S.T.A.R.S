@@ -75,9 +75,10 @@ sys.path.insert(0, str(_LIB if _LIB.is_dir() else RAIZ / "src"))
 from retrieval.consultas import (CONSULTAS, cargar_consultas,  # noqa: E402
                                  fenomeno_de_consulta)
 from retrieval.fragmentos import LIMITE_PALABRAS  # noqa: E402
-from retrieval.search import (BONIFICACION_FENOMENO, FACTOR_IDIOMA_OTROS,  # noqa: E402
-                              INDICE, K_CANDIDATOS, MAX_POR_DOCUMENTO,
-                              METADATA, N_DOCUMENTOS, N_FRAGMENTOS, Buscador)
+from retrieval.search import (BONIFICACION_FENOMENO, BONIFICACION_GRAFO,  # noqa: E402
+                              FACTOR_IDIOMA_OTROS, INDICE, K_CANDIDATOS,
+                              MAX_POR_DOCUMENTO, METADATA, N_DOCUMENTOS,
+                              N_FRAGMENTOS, Buscador)
 
 SALIDA = AQUI / "resultados.jsonl"
 
@@ -140,6 +141,10 @@ def configuracion_actual(args) -> dict:
     return {
         "bonificacion_fenomeno": args.bonificacion,
         "factor_idioma": args.factor_idioma,
+        # §8.5. Va en la configuración porque cambia la salida, que es el único
+        # criterio de esta función: sin él, `--comprobar` daría por buena una
+        # salida generada con el grafo apagado.
+        "bonificacion_grafo": args.bonificacion_grafo,
         "max_por_documento": args.max_por_documento,
         "k_candidatos": K_CANDIDATOS,
         "n_documentos": N_DOCUMENTOS,
@@ -325,7 +330,8 @@ def comprobar(args) -> int:
 
 def generar(consultas, buscador, modelo=None, max_por_documento=MAX_POR_DOCUMENTO,
             bonificacion=BONIFICACION_FENOMENO,
-            factor_idioma=FACTOR_IDIOMA_OTROS, vectores=None):
+            factor_idioma=FACTOR_IDIOMA_OTROS, vectores=None,
+            bonificacion_grafo=BONIFICACION_GRAFO):
     """Produce un objeto de resultado por consulta, en orden.
 
     Tres formas de obtener el vector de la consulta, en orden de preferencia:
@@ -373,7 +379,8 @@ def generar(consultas, buscador, modelo=None, max_por_documento=MAX_POR_DOCUMENT
         fenomeno = fenomeno_de_consulta(query_id) if bonificacion != 1.0 else None
         comun = dict(query_id=query_id, max_por_documento=max_por_documento,
                      fenomeno=fenomeno, bonificacion=bonificacion,
-                     factor_idioma=factor_idioma)
+                     factor_idioma=factor_idioma,
+                     bonificacion_grafo=bonificacion_grafo)
         if modelo is not None:
             resultado = buscador.buscar_texto(texto, modelo, **comun)
         elif vectores is not None:
@@ -387,6 +394,42 @@ def generar(consultas, buscador, modelo=None, max_por_documento=MAX_POR_DOCUMENT
             vector = np.asarray(buscador.indice.reconstruct(int(indice)))
             resultado = buscador.buscar(vector, consulta=texto, **comun)
         yield resultado
+
+
+def cargar_grafo(bonificacion: float):
+    """Carga el grafo de conocimiento para §8.5, o `None` si no procede.
+
+    Devuelve `None` —y la recuperación queda exclusivamente densa— en dos casos:
+    cuando la bonificación es 0, y cuando faltan los archivos del grafo.
+
+    ⚠️ **Si falta `chunk_index.json` el grafo NO se usa, y se dice en voz alta.**
+    `Grafo.evidencia()` solo puede proponer fragmentos que estén en ese mapa, así
+    que sin él devolvería `{}` en todas las consultas **sin lanzar ningún error**:
+    la salida saldría como si el grafo estuviera apagado y nada lo indicaría. Es
+    justo el fallo mudo que conviene convertir en un mensaje.
+    """
+    if not bonificacion:
+        return None
+    try:
+        from retrieval.grafo import CHUNK_INDEX, GRAFO, Grafo
+    except ImportError as e:
+        print(f"AVISO: no se pudo importar la integración del grafo ({e}).")
+        print("       La recuperación será exclusivamente densa.")
+        return None
+
+    if not GRAFO.is_file():
+        print(f"AVISO: no existe {GRAFO}; §8.5 queda desactivado.")
+        return None
+    if not CHUNK_INDEX.is_file():
+        print(f"AVISO: no existe {CHUNK_INDEX}, que es el mapa chunk_id→faiss_id.")
+        print("       Sin él el grafo no puede aportar ningún fragmento, así que")
+        print("       §8.5 queda desactivado en lugar de fingir que se aplica.")
+        return None
+
+    grafo = Grafo(GRAFO, chunk_index=CHUNK_INDEX)
+    print(f"grafo     : {len(grafo):,} nodos · {len(grafo.faiss_id):,} fragmentos "
+          f"resolubles · bonificación ×(1+{bonificacion})  (§8.5)")
+    return grafo
 
 
 def cargar_vectores_consulta(ruta: Path, consultas) -> "object":
@@ -453,6 +496,10 @@ def main() -> int:
     parser.add_argument("--factor-idioma", type=float, default=FACTOR_IDIOMA_OTROS,
                         help="factor <1.0 que penaliza los fragmentos fuera de "
                              "es/en, conforme a §8.7 (1.0 = desactivado)")
+    parser.add_argument("--bonificacion-grafo", type=float,
+                        default=BONIFICACION_GRAFO,
+                        help="tope de la bonificación por evidencia del grafo de "
+                             "conocimiento, conforme a §8.5 (0 = desactivada)")
     parser.add_argument("--vectores", type=Path, default=None,
                         help="matriz .npy con las consultas ya codificadas por el "
                              "mismo modelo y revisión, para regenerar la salida "
@@ -493,7 +540,8 @@ def main() -> int:
         print(f"AVISO: §9.3 espera 50 consultas y se han leído {len(consultas)}.")
 
     print("cargando índice y metadata…")
-    buscador = Buscador(args.indice, args.metadata)
+    grafo = cargar_grafo(args.bonificacion_grafo)
+    buscador = Buscador(args.indice, args.metadata, grafo=grafo)
     print(f"índice    : {buscador.indice.ntotal:,} vectores")
 
     modelo = vectores = None
@@ -516,7 +564,8 @@ def main() -> int:
     with open(temporal, "w", encoding="utf-8", newline="\n") as f:
         for resultado in generar(consultas, buscador, modelo,
                                  args.max_por_documento, args.bonificacion,
-                                 args.factor_idioma, vectores):
+                                 args.factor_idioma, vectores,
+                                 args.bonificacion_grafo):
             f.write(json.dumps(resultado.to_json(), ensure_ascii=False))
             f.write("\n")
             escritas += 1
